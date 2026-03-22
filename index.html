@@ -68,12 +68,36 @@ const DEMO = Array.from({length:20},(_,i)=>{
   return{id:1000+i,customer_name:nm,customer_phone:["0551234567","0562345678","0531234567","0541234567","0571234567"][i%5],branch:i%3===0?"الدمام":"الرياض",service:sv,price:SERVICES[sv],booking_date:d.toISOString().split("T")[0],booking_time:["09:00","10:00","11:00","01:00","02:00","03:00"][i%6],status:["confirmed","confirmed","pending","pending","cancelled"][i%5],payment_method:i%2?"تحويل بنكي":"دفع عند الزيارة",notified:false};
 }).sort((a,b)=>b.booking_date.localeCompare(a.booking_date));
 
+const STORE = {
+  bookings: "ebdaa_ammar_bookings_cache_v2",
+  supaUrl: "ebdaa_ammar_supa_url_v2",
+  supaKey: "ebdaa_ammar_supa_key_v2",
+  waInst: "ebdaa_ammar_wa_inst_v2",
+  autoConf: "ebdaa_ammar_auto_conf_v2",
+  autoCanc: "ebdaa_ammar_auto_canc_v2",
+  autoRem: "ebdaa_ammar_auto_rem_v2",
+  remMinutes: "ebdaa_ammar_rem_minutes_v2",
+  redemptions: "ebdaa_ammar_redemptions_v2",
+  reminded: "ebdaa_ammar_reminded_v2",
+};
+const safeGet = (key, fallback) => {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch {
+    return fallback;
+  }
+};
+const safeSet = (key, value) => {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+};
+
 const Badge = ({status,small})=>{const c=SC[status]||SC.pending;return(<span style={{display:"inline-flex",alignItems:"center",gap:5,background:c.bg,color:c.text,padding:small?"2px 10px":"4px 12px",borderRadius:20,fontSize:small?11:12,fontWeight:600}}><span style={{width:5,height:5,borderRadius:"50%",background:c.dot}}/>{STATUSES[status]||status}</span>);};
 const Toast = ({msg,type,onClose})=>{useEffect(()=>{const t=setTimeout(onClose,4000);return()=>clearTimeout(t);},[onClose]);const cl={success:"#34d399",error:"#f87171",info:"#60a5fa"};return(<div style={{position:"fixed",top:20,left:"50%",transform:"translateX(-50%)",background:"#1a1a2e",border:`1px solid ${cl[type]}`,color:"#fff",padding:"12px 20px",borderRadius:12,fontSize:13,fontWeight:600,zIndex:200,animation:"fadeUp 0.3s ease",maxWidth:"90vw",textAlign:"center"}}>{type==="success"?"✅":type==="error"?"❌":"ℹ️"} {msg}</div>);};
 const Toggle = ({value,onChange,label})=>(<div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"14px 0",borderBottom:"1px solid #1a1a30"}}><span style={{fontSize:14,color:"#e0e0f0"}}>{label}</span><div onClick={onChange} style={{width:48,height:26,borderRadius:13,cursor:"pointer",background:value?"#34d399":"#2a2a4a",transition:"all 0.3s",position:"relative"}}><div style={{width:20,height:20,borderRadius:"50%",background:"#fff",position:"absolute",top:3,right:value?3:"auto",left:value?"auto":3,transition:"all 0.3s"}}/></div></div>);
 
 function App() {
-  const [bookings,setBookings] = useState(DEMO);
+  const [bookings,setBookings] = useState(() => safeGet(STORE.bookings, DEMO));
   const [tab,setTab] = useState("home");
   const [sub,setSub] = useState(null);
   const [sel,setSel] = useState(null);
@@ -87,15 +111,15 @@ function App() {
   const [loading,setLoading] = useState(false);
 
   // Config
-  const [supaUrl,setSupaUrl] = useState("");
-  const [supaKey,setSupaKey] = useState("");
+  const [supaUrl,setSupaUrl] = useState(() => safeGet(STORE.supaUrl, ""));
+  const [supaKey,setSupaKey] = useState(() => safeGet(STORE.supaKey, ""));
   const [waToken] = useState("669c3f9310ef5");
-  const [waInst,setWaInst] = useState("669D7FC419A08");
-  const [autoConf,setAutoConf] = useState(true);
-  const [autoCanc,setAutoCanc] = useState(true);
-  const [autoRem,setAutoRem] = useState(true);
-  const [remMinutes,setRemMinutes] = useState(30); // minutes before appointment
-  const [reminded,setReminded] = useState(new Set()); // booking ids already reminded
+  const [waInst,setWaInst] = useState(() => safeGet(STORE.waInst, "669D7FC419A08"));
+  const [autoConf,setAutoConf] = useState(() => safeGet(STORE.autoConf, true));
+  const [autoCanc,setAutoCanc] = useState(() => safeGet(STORE.autoCanc, true));
+  const [autoRem,setAutoRem] = useState(() => safeGet(STORE.autoRem, true));
+  const [remMinutes,setRemMinutes] = useState(() => safeGet(STORE.remMinutes, 30)); // minutes before appointment
+  const [reminded,setReminded] = useState(() => new Set(safeGet(STORE.reminded, []))); // booking ids already reminded
   const [nextReminder,setNextReminder] = useState(null); // next upcoming reminder info
   const [showDb,setShowDb] = useState(false);
   const [showWa,setShowWa] = useState(false);
@@ -110,7 +134,7 @@ function App() {
 
   // Redemption system
   const [redeemModal,setRedeemModal] = useState(null); // {customer, reward}
-  const [redemptions,setRedemptions] = useState({}); // phone -> [{rewardId, date, points}]
+  const [redemptions,setRedemptions] = useState(() => safeGet(STORE.redemptions, {})); // phone -> [{rewardId, date, points}]
 
   const getRedeemedPoints = (phone) => (redemptions[phone] || []).reduce((s, r) => s + r.points, 0);
   const getAvailablePoints = (customer) => customer.points - getRedeemedPoints(customer.phone);
@@ -146,11 +170,23 @@ function App() {
     setRedeemModal(null);
   };
 
-  const dbOk = supaUrl && supaKey;
+  const dbOk = Boolean(supaUrl && supaKey);
   const waOk = waToken && waInst;
   const db = dbOk ? supa(supaUrl, supaKey) : null;
   const today = new Date().toISOString().split("T")[0];
   const perPage = 10;
+
+  // ═══ Local persistence ═══
+  useEffect(()=>{safeSet(STORE.bookings, bookings);},[bookings]);
+  useEffect(()=>{safeSet(STORE.supaUrl, supaUrl);},[supaUrl]);
+  useEffect(()=>{safeSet(STORE.supaKey, supaKey);},[supaKey]);
+  useEffect(()=>{safeSet(STORE.waInst, waInst);},[waInst]);
+  useEffect(()=>{safeSet(STORE.autoConf, autoConf);},[autoConf]);
+  useEffect(()=>{safeSet(STORE.autoCanc, autoCanc);},[autoCanc]);
+  useEffect(()=>{safeSet(STORE.autoRem, autoRem);},[autoRem]);
+  useEffect(()=>{safeSet(STORE.remMinutes, remMinutes);},[remMinutes]);
+  useEffect(()=>{safeSet(STORE.redemptions, redemptions);},[redemptions]);
+  useEffect(()=>{safeSet(STORE.reminded, Array.from(reminded));},[reminded]);
 
   // ═══ Load bookings from Supabase ═══
   const loadBookings = useCallback(async()=>{
@@ -158,10 +194,11 @@ function App() {
     setLoading(true);
     try{
       const data = await db.get("bookings","&order=booking_date.desc,booking_time.desc");
-      if(data.length) setBookings(data);
-    }catch(e){setToast({msg:`خطأ تحميل: ${e.message}`,type:"error"});}
-    finally{setLoading(false);}
-  },[supaUrl,supaKey]);
+      setBookings(Array.isArray(data) ? data : []);
+    }catch(e){
+      setToast({msg:`تعذر تحميل قاعدة البيانات، تم عرض آخر نسخة محفوظة محليًا. ${e.message}`,type:"error"});
+    }finally{setLoading(false);}
+  },[db]);
 
   useEffect(()=>{if(dbOk)loadBookings();},[dbOk,loadBookings]);
 
@@ -607,7 +644,20 @@ function App() {
           {showDb&&(<div style={{marginTop:14,paddingTop:14,borderTop:"1px solid #1a1a30"}}>
             <div style={{marginBottom:10}}><label style={{fontSize:11,color:"#8b8ba3",marginBottom:4,display:"block"}}>Project URL</label><input placeholder="https://xxxxx.supabase.co" value={supaUrl} onChange={e=>setSupaUrl(e.target.value.trim())} style={{...inp,direction:"ltr",textAlign:"left"}}/></div>
             <div style={{marginBottom:10}}><label style={{fontSize:11,color:"#8b8ba3",marginBottom:4,display:"block"}}>Anon Key</label><input placeholder="eyJ..." value={supaKey} onChange={e=>setSupaKey(e.target.value.trim())} style={{...inp,direction:"ltr",textAlign:"left",fontSize:12}}/></div>
-            <button className="bt" onClick={async()=>{if(!supaUrl||!supaKey)return;setLoading(true);try{const d=await supa(supaUrl,supaKey).get("bookings","&limit=1");setToast({msg:d?"✅ متصل بنجاح!":"فشل",type:d?"success":"error"});}catch(e){setToast({msg:`خطأ: ${e.message}`,type:"error"});}finally{setLoading(false);}}} style={{width:"100%",padding:11,borderRadius:10,border:"none",background:"linear-gradient(135deg,#4285f4,#2563eb)",color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif"}}>🧪 تجربة الاتصال</button>
+            <button className="bt" onClick={async()=>{
+              if(!supaUrl||!supaKey) return;
+              setLoading(true);
+              try{
+                const api = supa(supaUrl,supaKey);
+                const d = await api.get("bookings","&limit=1");
+                setToast({msg:Array.isArray(d)?"✅ متصل بنجاح! وتم حفظ الإعدادات":"فشل",type:Array.isArray(d)?"success":"error"});
+                if(Array.isArray(d)) {
+                  const all = await api.get("bookings","&order=booking_date.desc,booking_time.desc");
+                  setBookings(Array.isArray(all) ? all : []);
+                }
+              }catch(e){setToast({msg:`خطأ: ${e.message}`,type:"error"});}
+              finally{setLoading(false);}
+            }} style={{width:"100%",padding:11,borderRadius:10,border:"none",background:"linear-gradient(135deg,#4285f4,#2563eb)",color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif"}}>🧪 تجربة الاتصال</button>
           </div>)}
         </div>
 
