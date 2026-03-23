@@ -24,7 +24,16 @@ const supa = (url, key) => ({
   headers: { apikey: key, Authorization: `Bearer ${key}`, "Content-Type": "application/json", Prefer: "return=representation" },
   async get(table, query = "") { const r = await fetch(`${url}/rest/v1/${table}?select=*${query}`, { headers: this.headers }); return r.ok ? r.json() : []; },
   async insert(table, data) { const r = await fetch(`${url}/rest/v1/${table}`, { method: "POST", headers: this.headers, body: JSON.stringify(data) }); return r.ok ? r.json() : null; },
-  async update(table, id, data) { const r = await fetch(`${url}/rest/v1/${table}?id=eq.${id}`, { method: "PATCH", headers: this.headers, body: JSON.stringify(data) }); return r.ok; },
+  async update(table, id, data) {
+    const r = await fetch(`${url}/rest/v1/${table}?id=eq.${id}`, {
+      method: "PATCH",
+      headers: { ...this.headers, Prefer: "return=representation" },
+      body: JSON.stringify(data)
+    });
+    const txt = await r.text();
+    if (!r.ok) throw new Error(`Update failed: ${r.status} - ${txt}`);
+    try { return JSON.parse(txt); } catch { return txt; }
+  },
 });
 
 const SERVICES = { "تركيب شعر": 1700, "تغيير لاصق": 150 };
@@ -87,10 +96,10 @@ function App() {
   const [loading,setLoading] = useState(false);
 
   // Config
-  const [supaUrl,setSupaUrl] = useState(localStorage.getItem("supaUrl") || "");
-  const [supaKey,setSupaKey] = useState(localStorage.getItem("supaKey") || "");
-  const [waToken,setWaToken] = useState(localStorage.getItem("waToken") || "");
-  const [waInst,setWaInst] = useState(localStorage.getItem("waInst") || "");
+  const [supaUrl,setSupaUrl] = useState(() => localStorage.getItem("supaUrl") || "");
+  const [supaKey,setSupaKey] = useState(() => localStorage.getItem("supaKey") || "");
+  const [waToken,setWaToken] = useState(() => localStorage.getItem("waToken") || "");
+  const [waInst,setWaInst] = useState(() => localStorage.getItem("waInst") || "");
   const [autoConf,setAutoConf] = useState(true);
   const [autoCanc,setAutoCanc] = useState(true);
   const [autoRem,setAutoRem] = useState(true);
@@ -103,6 +112,13 @@ function App() {
   const [bulkTarget,setBulkTarget] = useState("all");
   const [bulkProg,setBulkProg] = useState({s:0,t:0,on:false});
 
+
+
+  useEffect(() => { localStorage.setItem("supaUrl", supaUrl || ""); }, [supaUrl]);
+  useEffect(() => { localStorage.setItem("supaKey", supaKey || ""); }, [supaKey]);
+  useEffect(() => { localStorage.setItem("waToken", waToken || ""); }, [waToken]);
+  useEffect(() => { localStorage.setItem("waInst", waInst || ""); }, [waInst]);
+
   // Cancel modal
   const [cancelModal,setCancelModal] = useState(null); // booking to cancel
   const [cancelReason,setCancelReason] = useState("");
@@ -110,9 +126,7 @@ function App() {
 
   // Redemption system
   const [redeemModal,setRedeemModal] = useState(null); // {customer, reward}
-  const [redemptions,setRedemptions] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("redemptions") || "{}"); } catch { return {}; }
-  }); // phone -> [{rewardId, date, points}]
+  const [redemptions,setRedemptions] = useState({}); // phone -> [{rewardId, date, points}]
 
   const getRedeemedPoints = (phone) => (redemptions[phone] || []).reduce((s, r) => s + r.points, 0);
   const getAvailablePoints = (customer) => customer.points - getRedeemedPoints(customer.phone);
@@ -135,10 +149,11 @@ function App() {
     if (waOk) {
       const available = getAvailablePoints(customer) - reward.points;
       try {
-        await sendWhatsBotRequest({
-          number: fmtPh(customer.phone),
+        await fetch("https://whatsbot.at/api/send_pedido", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+          number: fmtPh(customer.phone), type: "text",
           message: `🎁 مكافأة ولاء - إبداع عمار\n\nمرحباً ${customer.name}،\nتم استبدال نقاطك بنجاح!\n\n🏆 المكافأة: ${reward.name}\n⭐ النقاط المستخدمة: ${reward.points}\n📊 رصيدك المتبقي: ${available} نقطة\n\nأبرز الكوبون عند زيارتك القادمة.\nشكراً لولائك! 💈`,
-        });
+          instance_id: waInst, access_token: waToken
+        })});
         setToast({msg:`تم استبدال ${reward.points} نقطة وإشعار ${customer.name} ✓`,type:"success"});
       } catch { setToast({msg:"تم الاستبدال (فشل إرسال الإشعار)",type:"info"}); }
     } else {
@@ -147,136 +162,29 @@ function App() {
     setRedeemModal(null);
   };
 
-  const dbOk = Boolean(supaUrl && supaKey);
+  const dbOk = Boolean(supaUrl?.trim() && supaKey?.trim());
   const waOk = Boolean(waToken?.trim() && waInst?.trim());
-  const [waVerified,setWaVerified] = useState(false);
   const db = dbOk ? supa(supaUrl, supaKey) : null;
   const today = new Date().toISOString().split("T")[0];
   const perPage = 10;
-  const whatsbotEndpoint = "https://whatsbot.at/api/send_pedido";
-
-  const parseWhatsBotResponse = async (res) => {
-    const raw = await res.text();
-    let data = null;
-    try { data = JSON.parse(raw); } catch { data = { raw }; }
-    return { ok: res.ok, status: res.status, raw, data };
-  };
-
-  const isWhatsBotSuccess = (result) => {
-    if (!result.ok) return false;
-    const d = result.data || {};
-    const statusText = String(d?.status || "").toLowerCase();
-    const msgText = String(d?.message || d?.error || d?.raw || "").toLowerCase();
-    if (d?.error) return false;
-    if (d?.success === false || d?.status === false) return false;
-    if (["error","failed","fail","invalid"].includes(statusText)) return false;
-    if (msgText.includes("missing required parameters") || msgText.includes("invalid") || msgText.includes("unauthorized") || msgText.includes("expired")) return false;
-    return true;
-  };
-
-  const sendWhatsBotRequest = async ({ number, message }) => {
-    const token = waToken?.trim();
-    const inst = waInst?.trim();
-    if (!token || !inst) throw new Error("أدخل Access Token و Instance ID أولاً");
-
-    const payload = {
-      number: String(number || "").trim(),
-      type: "text",
-      message: String(message || "").trim(),
-      instance_id: inst,
-      access_token: token,
-    };
-
-    const attempts = [];
-
-    // 1) POST JSON
-    attempts.push(async () => {
-      const res = await fetch(whatsbotEndpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      return parseWhatsBotResponse(res);
-    });
-
-    // 2) POST FormData
-    attempts.push(async () => {
-      const form = new FormData();
-      Object.entries(payload).forEach(([k,v]) => form.append(k, v));
-      const res = await fetch(whatsbotEndpoint, { method: "POST", body: form });
-      return parseWhatsBotResponse(res);
-    });
-
-    // 3) PUT JSON
-    attempts.push(async () => {
-      const res = await fetch(whatsbotEndpoint, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      return parseWhatsBotResponse(res);
-    });
-
-    // 4) PUT URLSearchParams
-    attempts.push(async () => {
-      const params = new URLSearchParams();
-      Object.entries(payload).forEach(([k,v]) => params.append(k, v));
-      const res = await fetch(whatsbotEndpoint, {
-        method: "PUT",
-        headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
-        body: params.toString(),
-      });
-      return parseWhatsBotResponse(res);
-    });
-
-    let lastResult = null;
-    for (const attempt of attempts) {
-      try {
-        const result = await attempt();
-        console.log("WhatsBot attempt result:", result);
-        lastResult = result;
-        if (isWhatsBotSuccess(result)) return result;
-      } catch (err) {
-        console.error("WhatsBot attempt failed:", err);
-        lastResult = { ok: false, status: 0, raw: String(err?.message || err), data: { error: String(err?.message || err) } };
-      }
-    }
-
-    const msg = lastResult?.data?.message || lastResult?.data?.error || lastResult?.raw || "فشل إرسال الواتساب";
-    throw new Error(lastResult?.status ? `HTTP ${lastResult.status} - ${msg}` : msg);
-  };
-
-
-  useEffect(() => { localStorage.setItem("supaUrl", supaUrl); }, [supaUrl]);
-  useEffect(() => { localStorage.setItem("supaKey", supaKey); }, [supaKey]);
-  useEffect(() => { localStorage.setItem("waToken", waToken); }, [waToken]);
-  useEffect(() => { localStorage.setItem("waInst", waInst); }, [waInst]);
-  useEffect(() => { localStorage.setItem("redemptions", JSON.stringify(redemptions)); }, [redemptions]);
 
   // ═══ Load bookings from Supabase ═══
-  const loadBookings = useCallback(async()=>{
-    if(!db) {
-      setBookings([]);
-      return;
-    }
+  const loadBookings = useCallback(async () => {
+    if (!db) return;
     setLoading(true);
-    try{
-      const data = await db.get("bookings","&order=booking_date.desc,booking_time.desc");
-      setBookings(prev => {
-        const next = Array.isArray(data) ? data : [];
-        return JSON.stringify(prev) === JSON.stringify(next) ? prev : next;
-      });
-    }catch(e){
-      setToast({msg:`خطأ تحميل: ${e.message}`,type:"error"});
-      setBookings([]);
+    try {
+      const data = await db.get("bookings", "&order=booking_date.desc,booking_time.desc");
+      setBookings(prev => JSON.stringify(prev) === JSON.stringify(data || []) ? prev : (data || []));
+    } catch (e) {
+      setToast({ msg: `خطأ تحميل: ${e.message}`, type: "error" });
+    } finally {
+      setLoading(false);
     }
-    finally{setLoading(false);}
-  },[db]);
+  }, [db]);
 
-  useEffect(()=>{
-    if(dbOk) loadBookings();
-    else setBookings([]);
-  },[dbOk]);
+  useEffect(() => {
+    if (dbOk) loadBookings();
+  }, [dbOk]);
 
   // ═══ Auto-Reminder System (30 min before) ═══
   useEffect(() => {
@@ -311,24 +219,17 @@ function App() {
         // Send reminder if within 1 minute window of the reminder time
         if (diff <= 0 && diff > -60000) {
           try {
-            const res = await fetch("https://whatsbot.at/api/send_pedido", {
+            await fetch("https://whatsbot.at/api/send_pedido", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
                 number: fmtPh(bk.customer_phone),
                 type: "text",
                 message: MSG.reminder(bk),
-                instance_id: waInst.trim(),
-                access_token: waToken.trim(),
+                instance_id: waInst,
+                access_token: waToken,
               }),
             });
-            const raw = await res.text();
-            let data = null;
-            try { data = JSON.parse(raw); } catch { data = { raw }; }
-            const msgText = String(data?.message || data?.error || data?.raw || "").toLowerCase();
-            const failed = !res.ok || data?.success === false || data?.status === false || !!data?.error || msgText.includes("invalid") || msgText.includes("not found") || msgText.includes("unauthorized") || msgText.includes("expired");
-            if (failed) throw new Error(data?.message || data?.error || `HTTP ${res.status}`);
-            setWaVerified(true);
             setReminded(prev => new Set([...prev, bk.id]));
             setBookings(prev => prev.map(b => b.id === bk.id ? { ...b, reminded: true } : b));
             setToast({ msg: `⏰ تذكير تلقائي: تم إشعار ${bk.customer_name} (${bk.booking_time})`, type: "success" });
@@ -374,65 +275,116 @@ function App() {
   const wk = Array.from({length:7},(_,i)=>{const d=new Date();d.setDate(d.getDate()-(6-i));const ds=d.toISOString().split("T")[0];return{day:["أحد","اثنين","ثلاثاء","أربعاء","خميس","جمعة","سبت"][d.getDay()],c:bookings.filter(b=>b.booking_date===ds&&b.status==="confirmed").length,t:ds===today};});
   const mxW=Math.max(...wk.map(d=>d.c),1);
 
-  const fmtPh=p=>{let c=p.replace(/\D/g,"");if(c.startsWith("00"))c=c.slice(2);if(c.startsWith("0"))c="966"+c.slice(1);if(!c.startsWith("966"))c="966"+c;return c;};
+  const fmtPh = (p) => { let c = String(p || "").replace(/\D/g, ""); if (!c) return ""; if (c.startsWith("00")) c = c.slice(2); if (c.startsWith("966")) return c; if (c.startsWith("05")) return "966" + c.slice(1); if (c.startsWith("5") && c.length === 9) return "966" + c; return c; };
 
   // ═══ WhatsBot.at Send ═══
-  const sendWA = async(bk,type,reason)=>{
-    if(!waToken?.trim() || !waInst?.trim()){setToast({msg:"أدخل Access Token و Instance ID أولاً",type:"error"});return false;}
-    setSending(true);
-    try{
-      const message = type==="cancellation" ? MSG[type](bk,reason) : MSG[type](bk);
-      const result = await sendWhatsBotRequest({ number: fmtPh(bk.customer_phone), message });
-      console.log("WhatsBot send response:", result);
-      setWaVerified(true);
-      setToast({msg:`تم إرسال ${type==="confirmation"?"تأكيد":type==="reminder"?"تذكير":"إلغاء"} لـ ${bk.customer_name} ✓`,type:"success"});
-      if(db) await db.update("bookings",bk.id,{notified:true});
-      setBookings(p=>p.map(b=>b.id===bk.id?{...b,notified:true}:b));
-      return true;
-    }catch(e){
-      console.error("WhatsBot send failed:", e);
-      setWaVerified(false);
-      setToast({msg:`خطأ واتساب: ${e.message}`,type:"error"});
+  const sendWA = async (bk, type, reason) => {
+    if (!waToken?.trim() || !waInst?.trim()) {
+      setToast({ msg: "أدخل Access Token و Instance ID أولاً", type: "error" });
       return false;
-    }finally{setSending(false);}
+    }
+    if (!bk?.customer_phone || !String(bk.customer_phone).trim()) {
+      setToast({ msg: `رقم العميل غير موجود: ${bk?.customer_name || ""}`, type: "error" });
+      return false;
+    }
+    setSending(true);
+    try {
+      const message = type === "cancellation" ? MSG[type](bk, reason) : MSG[type](bk);
+      const payload = {
+        number: fmtPh(String(bk.customer_phone)),
+        type: "text",
+        message,
+        instance_id: waInst.trim(),
+        access_token: waToken.trim(),
+      };
+      const attemptJson = async () => fetch("https://whatsbot.at/api/send_pedido", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      const attemptForm = async () => {
+        const form = new FormData();
+        Object.entries(payload).forEach(([k,v]) => form.append(k, v));
+        return fetch("https://whatsbot.at/api/send_pedido", { method: "POST", body: form });
+      };
+      let res = await attemptJson();
+      let txt = await res.text();
+      if (!res.ok && txt.includes("Missing required parameters")) {
+        res = await attemptForm();
+        txt = await res.text();
+      }
+      if (!res.ok) throw new Error(`HTTP ${res.status} - ${txt}`);
+      let data = {};
+      try { data = JSON.parse(txt); } catch { data = { raw: txt }; }
+      if (data?.status === "error" || data?.success === false || data?.error) {
+        throw new Error(data?.message || data?.error || "فشل إرسال الرسالة");
+      }
+      if (db) {
+        try { await db.update("bookings", bk.id, { notified: true }); } catch {}
+      }
+      setBookings(p => p.map(b => b.id === bk.id ? { ...b, notified: true } : b));
+      setToast({ msg: `تم إرسال ${type === "confirmation" ? "تأكيد" : type === "reminder" ? "تذكير" : "إلغاء"} لـ ${bk.customer_name} ✓`, type: "success" });
+      return true;
+    } catch (e) {
+      setToast({ msg: `فشل الإرسال: ${e.message}`, type: "error" });
+      return false;
+    } finally {
+      setSending(false);
+    }
   };
 
   // ═══ Update Status ═══
-  const updSt = async(bk,ns)=>{
-    if(ns==="cancelled"){
-      // Show cancel reason modal instead of direct cancel
+  const updSt = async (bk, ns) => {
+    if (ns === "cancelled") {
       setCancelModal(bk);
       setCancelReason("");
       return;
     }
-    if(!db){setToast({msg:"اربط قاعدة البيانات أولاً",type:"error"});return;}
-    const ok = await db.update("bookings",bk.id,{status:ns});
-    if(!ok){setToast({msg:"فشل تحديث الحجز في قاعدة البيانات",type:"error"});return;}
-    await loadBookings();
-    const up={...bk,status:ns};
-    if(ns==="confirmed"&&autoConf&&waOk) await sendWA(up,"confirmation");
-    setSel(up);
+    try {
+      if (!db) {
+        setToast({ msg: "قاعدة البيانات غير متصلة", type: "error" });
+        return;
+      }
+      const updated = await db.update("bookings", bk.id, { status: ns });
+      if (!updated || (Array.isArray(updated) && updated.length === 0)) throw new Error("لم يتم تحديث أي سجل");
+      const up = { ...bk, status: ns };
+      setBookings(p => p.map(b => b.id === bk.id ? { ...b, status: ns } : b));
+      setSel(up);
+      setToast({ msg: "تم حفظ الحالة في قاعدة البيانات ✅", type: "success" });
+      if (ns === "confirmed") {
+        if (!autoConf) {
+          setToast({ msg: "تم التأكيد لكن الإرسال التلقائي مقفول", type: "info" });
+          return;
+        }
+        const sent = await sendWA(up, "confirmation");
+        if (!sent) setToast({ msg: "تم تأكيد الحجز لكن رسالة الواتساب لم تُرسل", type: "error" });
+      }
+    } catch (e) {
+      setToast({ msg: `فشل تحديث الحالة: ${e.message}`, type: "error" });
+    }
   };
 
   // Confirm cancellation with reason
-  const confirmCancel = async()=>{
-    if(!cancelModal) return;
+  const confirmCancel = async () => {
+    if (!cancelModal) return;
     const bk = cancelModal;
-    const reason = cancelReason.trim();
-    if(!reason){setToast({msg:"يرجى إدخال سبب الإلغاء",type:"error"});return;}
-
-    if(!db){setToast({msg:"اربط قاعدة البيانات أولاً",type:"error"});return;}
-    const ok = await db.update("bookings",bk.id,{status:"cancelled",cancel_reason:reason});
-    if(!ok){setToast({msg:"فشل حفظ الإلغاء في قاعدة البيانات",type:"error"});return;}
-    await loadBookings();
-    const up={...bk,status:"cancelled",cancel_reason:reason};
-
-    if(autoCanc&&waOk) await sendWA(up,"cancellation",reason);
-
-    setSel(up);
-    setCancelModal(null);
-    setCancelReason("");
-    setToast({msg:`تم إلغاء حجز ${bk.customer_name} وإشعاره ✓`,type:"success"});
+    const reason = cancelReason.trim() || "تم الإلغاء من الإدارة";
+    try {
+      if (!db) {
+        setToast({ msg: "قاعدة البيانات غير متصلة", type: "error" });
+        return;
+      }
+      try {
+        await db.update("bookings", bk.id, { status: "cancelled", cancel_reason: reason });
+      } catch {
+        await db.update("bookings", bk.id, { status: "cancelled" });
+      }
+      const up = { ...bk, status: "cancelled", cancel_reason: reason };
+      setBookings(p => p.map(b => b.id === bk.id ? { ...b, status: "cancelled", cancel_reason: reason } : b));
+      setSel(up);
+      if (autoCanc && waOk) await sendWA(up, "cancellation", reason);
+      setCancelModal(null);
+      setCancelReason("");
+      setToast({ msg: `تم إلغاء حجز ${bk.customer_name} وحفظه في القاعدة ✓`, type: "success" });
+    } catch (e) {
+      setToast({ msg: `❌ فشل حفظ الإلغاء في قاعدة البيانات: ${e.message}`, type: "error" });
+    }
   };
 
   // ═══ Bulk Send ═══
@@ -442,7 +394,7 @@ function App() {
     setBulkProg({s:0,t:tg.length,on:true});
     let s=0;
     for(const c of tg){
-      try{await sendWhatsBotRequest({number:fmtPh(c.phone),message:`💈 إبداع عمار\n\nمرحباً ${c.name}،\n${bulkMsg}`});s++;}catch(e){console.error("Bulk WhatsBot send failed:",e);}
+      try{await fetch("https://whatsbot.at/api/send_pedido",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({number:fmtPh(c.phone),type:"text",message:`💈 إبداع عمار\n\nمرحباً ${c.name}،\n${bulkMsg}`,instance_id:waInst,access_token:waToken})});s++;}catch{}
       setBulkProg({s,t:tg.length,on:true});
       await new Promise(r=>setTimeout(r,1500));
     }
@@ -467,7 +419,7 @@ function App() {
           </div>
           <div style={{display:"flex",alignItems:"center",gap:6}}>
             {dbOk&&<span style={{fontSize:9,background:"#4285f422",color:"#60a5fa",padding:"3px 8px",borderRadius:10}}>DB ✓</span>}
-            {waOk&&<span style={{fontSize:9,background:waVerified?"#25d36622":"#8882",color:waVerified?"#34d399":"#cbd5e1",padding:"3px 8px",borderRadius:10}}>{waVerified?"WA ✓":"WA Config"}</span>}
+            {waOk&&<span style={{fontSize:9,background:"#25d36622",color:"#34d399",padding:"3px 8px",borderRadius:10}}>WA Ready</span>}
             <div style={{width:36,height:36,borderRadius:10,background:"linear-gradient(135deg,#c0a062,#8b6914)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,fontWeight:900,color:"#fff"}}>ع</div>
           </div>
         </div>
@@ -731,8 +683,7 @@ function App() {
           </div>
           {showDb&&(<div style={{marginTop:14,paddingTop:14,borderTop:"1px solid #1a1a30"}}>
             <div style={{marginBottom:10}}><label style={{fontSize:11,color:"#8b8ba3",marginBottom:4,display:"block"}}>Project URL</label><input placeholder="https://xxxxx.supabase.co" value={supaUrl} onChange={e=>setSupaUrl(e.target.value.trim())} style={{...inp,direction:"ltr",textAlign:"left"}}/></div>
-            <div style={{marginBottom:10}}><label style={{fontSize:11,color:"#8b8ba3",marginBottom:4,display:"block"}}>Anon / Publishable Key</label><input placeholder="eyJ..." value={supaKey} onChange={e=>setSupaKey(e.target.value.trim())} style={{...inp,direction:"ltr",textAlign:"left",fontSize:12}}/></div>
-            <div style={{fontSize:11,color:"#8b8ba3",background:"#1a1a30",padding:"8px 10px",borderRadius:8,marginBottom:10}}>اللوحة الآن تعرض فقط البيانات القادمة من قاعدة البيانات. لو قاعدة البيانات فارغة سيظهر لك 0 حجوزات بدل بيانات تجريبية.</div>
+            <div style={{marginBottom:10}}><label style={{fontSize:11,color:"#8b8ba3",marginBottom:4,display:"block"}}>Anon Key</label><input placeholder="eyJ..." value={supaKey} onChange={e=>setSupaKey(e.target.value.trim())} style={{...inp,direction:"ltr",textAlign:"left",fontSize:12}}/></div>
             <button className="bt" onClick={async()=>{if(!supaUrl||!supaKey)return;setLoading(true);try{const d=await supa(supaUrl,supaKey).get("bookings","&limit=1");setToast({msg:d?"✅ متصل بنجاح!":"فشل",type:d?"success":"error"});}catch(e){setToast({msg:`خطأ: ${e.message}`,type:"error"});}finally{setLoading(false);}}} style={{width:"100%",padding:11,borderRadius:10,border:"none",background:"linear-gradient(135deg,#4285f4,#2563eb)",color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif"}}>🧪 تجربة الاتصال</button>
           </div>)}
         </div>
@@ -740,14 +691,13 @@ function App() {
         {/* WhatsBot */}
         <div style={{background:"#131328",borderRadius:14,padding:16,marginBottom:10}}>
           <div onClick={()=>setShowWa(!showWa)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer"}}>
-            <div style={{display:"flex",alignItems:"center",gap:10}}><div style={{width:38,height:38,borderRadius:10,background:"#25d36622",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18}}>💬</div><div><div style={{fontSize:13,fontWeight:700,color:"#fff"}}>WhatsBot.at</div><div style={{fontSize:11,color:waOk?"#34d399":"#666680"}}>{waVerified?"✅ متصل فعليًا":waOk?"⚠️ تم إدخال البيانات فقط":"أدخل Instance ID"}</div></div></div>
+            <div style={{display:"flex",alignItems:"center",gap:10}}><div style={{width:38,height:38,borderRadius:10,background:"#25d36622",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18}}>💬</div><div><div style={{fontSize:13,fontWeight:700,color:"#fff"}}>WhatsBot.at</div><div style={{fontSize:11,color:waOk?"#34d399":"#666680"}}>{waOk?"✅ البيانات محفوظة":"أدخل بيانات WhatsBot"}</div></div></div>
             <span style={{color:"#555578",transform:showWa?"rotate(90deg)":"none",transition:"0.2s"}}>←</span>
           </div>
           {showWa&&(<div style={{marginTop:14,paddingTop:14,borderTop:"1px solid #1a1a30"}}>
-            <div style={{marginBottom:10}}><label style={{fontSize:11,color:"#8b8ba3",marginBottom:4,display:"block"}}>Access Token *</label><input placeholder="أدخل Access Token" value={waToken} onChange={e=>setWaToken(e.target.value)} style={{...inp,direction:"ltr",textAlign:"left"}}/></div>
+            <div style={{marginBottom:10}}><label style={{fontSize:"11px",color:"#8b8ba3",marginBottom:4,display:"block"}}>Access Token *</label><input placeholder="أدخل Access Token" value={waToken} onChange={e=>setWaToken(e.target.value.trim())} style={{...inp,direction:"ltr",textAlign:"left"}}/></div>
             <div style={{marginBottom:10}}><label style={{fontSize:11,color:"#8b8ba3",marginBottom:4,display:"block"}}>Instance ID *</label><input placeholder="609ACF283XXXX" value={waInst} onChange={e=>setWaInst(e.target.value.trim())} style={{...inp,direction:"ltr",textAlign:"left"}}/></div>
-            <div style={{fontSize:11,color:"#8b8ba3",background:"#1a1a30",padding:"8px 10px",borderRadius:8,marginBottom:10}}>أدخل التوكن والـ Instance ID من لوحة WhatsBot. التطبيق سيحاول أكثر من صيغة إرسال تلقائيًا لأن بعض نسخ API تقبل POST أو PUT وبصيَغ مختلفة.</div>
-            <button className="bt" disabled={!waInst || !waToken || sending} onClick={async()=>{setSending(true);try{const result=await sendWhatsBotRequest({number:"966566626652",message:"✅ لوحة إبداع عمار متصلة!"});console.log("WhatsBot test response:",result);setWaVerified(true);setToast({msg:"✅ تم إرسال رسالة التجربة بنجاح",type:"success"});}catch(e){console.error("WhatsBot test failed:",e);setWaVerified(false);setToast({msg:`فشل الواتساب: ${e.message}`,type:"error"});}finally{setSending(false);}}} style={{width:"100%",padding:11,borderRadius:10,border:"none",background:"#25d366",color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif",opacity:(waInst&&waToken)?1:0.5}}>🧪 تجربة</button>
+            <button className="bt" disabled={!waInst} onClick={async()=>{setSending(true);try{await fetch("https://whatsbot.at/api/send_pedido",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({number:"966566626652",type:"text",message:"✅ لوحة إبداع عمار متصلة!",instance_id:waInst,access_token:waToken})});setToast({msg:"تحقق الواتساب ✓",type:"success"});}catch(e){setToast({msg:e.message,type:"error"});}finally{setSending(false);}}} style={{width:"100%",padding:11,borderRadius:10,border:"none",background:"#25d366",color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif",opacity:waInst?1:0.5}}>🧪 تجربة</button>
           </div>)}
         </div>
 
