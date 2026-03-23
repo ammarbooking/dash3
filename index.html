@@ -1,111 +1,932 @@
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>لوحة واتساب</title>
-  <style>
-    body{font-family:Arial,sans-serif;background:#111827;color:#fff;padding:20px;max-width:700px;margin:auto}
-    input,button{padding:12px;margin:6px 0;border-radius:10px;border:none;width:100%;box-sizing:border-box}
-    input{background:#fff;color:#111}
-    button{background:#25d366;color:#fff;cursor:pointer;font-weight:bold}
-    .box{background:#1f2937;padding:14px;border-radius:12px;margin-top:14px}
-    pre{white-space:pre-wrap;word-break:break-word}
-    .muted{color:#cbd5e1;font-size:14px}
-  </style>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no"/>
+<meta name="theme-color" content="#0b0b18"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<title>إبداع عمار - لوحة التحكم</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💈</text></svg>"/>
+<link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@300;400;500;700;800;900&display=swap" rel="stylesheet"/>
+<style>body{margin:0;padding:0;background:#0b0b18;font-family:'Tajawal',sans-serif;}</style>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 </head>
 <body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useCallback } = React;
 
-  <div class="box">
-    <h2>⚙️ إعدادات واتساب</h2>
-    <div class="muted">اكتب Access Token و Instance ID مرة واحدة فقط، وسيتم حفظهم في المتصفح.</div>
-    <input id="token" placeholder="Access Token">
-    <input id="inst" placeholder="Instance ID">
-    <button onclick="saveSettings()">💾 حفظ الإعدادات</button>
-  </div>
 
-  <div class="box">
-    <h2>📩 إرسال رسالة تأكيد</h2>
-    <input id="name" placeholder="اسم العميل">
-    <input id="phone" placeholder="رقم العميل">
-    <button onclick="sendMessage()">🚀 إرسال</button>
-  </div>
+// ═══ Supabase REST API Helper ═══
+const supa = (url, key) => ({
+  headers: { apikey: key, Authorization: `Bearer ${key}`, "Content-Type": "application/json", Prefer: "return=representation" },
+  async get(table, query = "") { const r = await fetch(`${url}/rest/v1/${table}?select=*${query}`, { headers: this.headers }); return r.ok ? r.json() : []; },
+  async insert(table, data) { const r = await fetch(`${url}/rest/v1/${table}`, { method: "POST", headers: this.headers, body: JSON.stringify(data) }); return r.ok ? r.json() : null; },
+  async update(table, id, data) {
+    const r = await fetch(`${url}/rest/v1/${table}?id=eq.${id}`, {
+      method: "PATCH",
+      headers: { ...this.headers, Prefer: "return=representation" },
+      body: JSON.stringify(data)
+    });
+    const txt = await r.text();
+    if (!r.ok) throw new Error(`Update failed: ${r.status} - ${txt}`);
+    try { return JSON.parse(txt); } catch { return txt; }
+  },
+});
 
-  <div class="box">
-    <h3>النتيجة</h3>
-    <pre id="result">لا يوجد</pre>
-  </div>
+const SERVICES = { "تركيب شعر": 1700, "تغيير لاصق": 150 };
+const STATUSES = { confirmed: "مؤكد", pending: "بانتظار", cancelled: "ملغي" };
+const SC = { confirmed:{bg:"#0d3320",text:"#34d399",dot:"#34d399"}, pending:{bg:"#3b2f0a",text:"#fbbf24",dot:"#fbbf24"}, cancelled:{bg:"#3b1118",text:"#f87171",dot:"#f87171"} };
 
-<script>
-let waToken = localStorage.getItem("waToken") || "";
-let waInst = localStorage.getItem("waInst") || "";
+// ═══ Loyalty Points System ═══
+const POINTS_PER_SERVICE = { "تركيب شعر": 50, "تغيير لاصق": 10 };
+const ATTENDANCE_BONUS = 5;
+const LOYALTY_TIERS = [
+  { name: "برونزي", min: 0, icon: "🥉", color: "#cd7f32", bg: "#cd7f3215", next: 50 },
+  { name: "فضي", min: 50, icon: "🥈", color: "#c0c0c0", bg: "#c0c0c015", next: 150 },
+  { name: "ذهبي", min: 150, icon: "🥇", color: "#ffd700", bg: "#ffd70015", next: 300 },
+  { name: "ماسي", min: 300, icon: "💎", color: "#b9f2ff", bg: "#b9f2ff15", next: null },
+];
+const getTier = (points) => [...LOYALTY_TIERS].reverse().find(t => points >= t.min) || LOYALTY_TIERS[0];
+const getProgress = (points) => { const tier = getTier(points); if (!tier.next) return 100; const prev = tier.min; return Math.min(((points - prev) / (tier.next - prev)) * 100, 100); };
+const getNextTier = (points) => { const tier = getTier(points); const idx = LOYALTY_TIERS.indexOf(tier); return idx < LOYALTY_TIERS.length - 1 ? LOYALTY_TIERS[idx + 1] : null; };
+const calcPoints = (bookings) => bookings.filter(b=>b.status==="confirmed").reduce((sum, b) => sum + (POINTS_PER_SERVICE[b.service] || 0) + ATTENDANCE_BONUS, 0);
 
-document.getElementById("token").value = waToken;
-document.getElementById("inst").value = waInst;
+// ═══ Rewards / Redemption System ═══
+const REWARDS = [
+  { id: "r1", name: "خصم 50 ر.س على تركيب شعر", points: 50, discount: 50, icon: "🎫", service: "تركيب شعر" },
+  { id: "r2", name: "تغيير لاصق مجاني", points: 30, discount: 150, icon: "🎁", service: "تغيير لاصق" },
+  { id: "r3", name: "خصم 100 ر.س على تركيب شعر", points: 100, discount: 100, icon: "💰", service: "تركيب شعر" },
+  { id: "r4", name: "خصم 200 ر.س على تركيب شعر", points: 180, discount: 200, icon: "🔥", service: "تركيب شعر" },
+  { id: "r5", name: "تركيب شعر مجاني!", points: 300, discount: 1700, icon: "👑", service: "تركيب شعر" },
+];
 
-function saveSettings() {
-  waToken = document.getElementById("token").value.trim();
-  waInst = document.getElementById("inst").value.trim();
-  localStorage.setItem("waToken", waToken);
-  localStorage.setItem("waInst", waInst);
-  alert("تم الحفظ");
-}
+const MSG = {
+  confirmation: b=>{const pts=POINTS_PER_SERVICE[b.service]||0;return `✅ تأكيد حجز - إبداع عمار\n\nمرحباً ${b.customer_name}،\nتم تأكيد حجزك!\n\n📋 #${b.id}\n✂️ ${b.service}\n📍 ${b.branch}\n📅 ${b.booking_date}\n🕐 ${b.booking_time}\n💰 ${b.price} ر.س\n\n⭐ ستحصل على ${pts + ATTENDANCE_BONUS} نقطة ولاء عند الحضور!\n\nنتطلع لخدمتكم! 💈`;},
+  reminder: b=>`⏰ تذكير بموعدك - إبداع عمار\n\nمرحباً ${b.customer_name}،\nموعدك بعد نصف ساعة!\n\n📅 ${b.booking_date}\n🕐 ${b.booking_time}\n📍 ${b.branch}\n✂️ ${b.service}\n\nنتمنى لكم تجربة مميزة! ⭐\nفي انتظاركم 💈`,
+  cancellation: (b,reason)=>`❌ إلغاء حجز - إبداع عمار\n\nمرحباً ${b.customer_name}،\nنأسف لإبلاغك بإلغاء حجزك رقم #${b.id}\n\n📋 تفاصيل الحجز الملغي:\n✂️ ${b.service}\n📍 ${b.branch}\n📅 ${b.booking_date}\n🕐 ${b.booking_time}\n${reason?`\n📌 سبب الإلغاء:\n${reason}\n`:""}\nيمكنك إعادة الحجز في أي وقت.\nنتمنى خدمتكم قريباً! 🙏`,
+};
 
-function formatPhone(p) {
-  let c = String(p || "").replace(/\D/g, "");
-  if (!c.startsWith("966")) {
-    c = "966" + c.replace(/^0/, "");
-  }
-  return c;
-}
+// Demo data when not connected
+const DEMO = Array.from({length:20},(_,i)=>{
+  const nm=["محمد العتيبي","خالد الشمري","عبدالله القحطاني","فهد الدوسري","سعد المطيري","أحمد الغامدي","عمر الحربي","يوسف الزهراني"][i%8];
+  const d=new Date();d.setDate(d.getDate()-Math.floor(Math.random()*15));
+  const sv=i%4===0?"تغيير لاصق":"تركيب شعر";
+  return{id:1000+i,customer_name:nm,customer_phone:["0551234567","0562345678","0531234567","0541234567","0571234567"][i%5],branch:i%3===0?"الدمام":"الرياض",service:sv,price:SERVICES[sv],booking_date:d.toISOString().split("T")[0],booking_time:["09:00","10:00","11:00","01:00","02:00","03:00"][i%6],status:["confirmed","confirmed","pending","pending","cancelled"][i%5],payment_method:i%2?"تحويل بنكي":"دفع عند الزيارة",notified:false};
+}).sort((a,b)=>b.booking_date.localeCompare(a.booking_date));
 
-async function sendMessage() {
-  const name = document.getElementById("name").value.trim();
-  const phone = document.getElementById("phone").value.trim();
+const Badge = ({status,small})=>{const c=SC[status]||SC.pending;return(<span style={{display:"inline-flex",alignItems:"center",gap:5,background:c.bg,color:c.text,padding:small?"2px 10px":"4px 12px",borderRadius:20,fontSize:small?11:12,fontWeight:600}}><span style={{width:5,height:5,borderRadius:"50%",background:c.dot}}/>{STATUSES[status]||status}</span>);};
+const Toast = ({msg,type,onClose})=>{useEffect(()=>{const t=setTimeout(onClose,4000);return()=>clearTimeout(t);},[onClose]);const cl={success:"#34d399",error:"#f87171",info:"#60a5fa"};return(<div style={{position:"fixed",top:20,left:"50%",transform:"translateX(-50%)",background:"#1a1a2e",border:`1px solid ${cl[type]}`,color:"#fff",padding:"12px 20px",borderRadius:12,fontSize:13,fontWeight:600,zIndex:200,animation:"fadeUp 0.3s ease",maxWidth:"90vw",textAlign:"center"}}>{type==="success"?"✅":type==="error"?"❌":"ℹ️"} {msg}</div>);};
+const Toggle = ({value,onChange,label})=>(<div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"14px 0",borderBottom:"1px solid #1a1a30"}}><span style={{fontSize:14,color:"#e0e0f0"}}>{label}</span><div onClick={onChange} style={{width:48,height:26,borderRadius:13,cursor:"pointer",background:value?"#34d399":"#2a2a4a",transition:"all 0.3s",position:"relative"}}><div style={{width:20,height:20,borderRadius:"50%",background:"#fff",position:"absolute",top:3,right:value?3:"auto",left:value?"auto":3,transition:"all 0.3s"}}/></div></div>);
 
-  if (!waToken || !waInst) {
-    alert("اكتب Access Token و Instance ID");
-    return;
-  }
+function App() {
+  const [bookings,setBookings] = useState([]);
+  const [tab,setTab] = useState("home");
+  const [sub,setSub] = useState(null);
+  const [sel,setSel] = useState(null);
+  const [selCust,setSelCust] = useState(null);
+  const [search,setSearch] = useState("");
+  const [branch,setBranch] = useState("الكل");
+  const [statusF,setStatusF] = useState("الكل");
+  const [page,setPage] = useState(0);
+  const [toast,setToast] = useState(null);
+  const [sending,setSending] = useState(false);
+  const [loading,setLoading] = useState(false);
 
-  if (!name || !phone) {
-    alert("اكتب اسم العميل ورقمه");
-    return;
-  }
+  // Config
+  const [supaUrl,setSupaUrl] = useState(() => localStorage.getItem("supaUrl") || "");
+  const [supaKey,setSupaKey] = useState(() => localStorage.getItem("supaKey") || "");
+  const [waToken,setWaToken] = useState(() => localStorage.getItem("waToken") || "");
+  const [waInst,setWaInst] = useState(() => localStorage.getItem("waInst") || "");
+  const [autoConf,setAutoConf] = useState(true);
+  const [autoCanc,setAutoCanc] = useState(true);
+  const [autoRem,setAutoRem] = useState(true);
+  const [remMinutes,setRemMinutes] = useState(30); // minutes before appointment
+  const [reminded,setReminded] = useState(new Set()); // booking ids already reminded
+  const [nextReminder,setNextReminder] = useState(null); // next upcoming reminder info
+  const [showDb,setShowDb] = useState(false);
+  const [showWa,setShowWa] = useState(false);
+  const [bulkMsg,setBulkMsg] = useState("");
+  const [bulkTarget,setBulkTarget] = useState("all");
+  const [bulkProg,setBulkProg] = useState({s:0,t:0,on:false});
 
-  const payload = {
-    number: formatPhone(phone),
-    message: `✅ تم تأكيد حجزك يا ${name}`,
-    instance_id: waInst,
-    access_token: waToken
+
+
+  useEffect(() => { localStorage.setItem("supaUrl", supaUrl || ""); }, [supaUrl]);
+  useEffect(() => { localStorage.setItem("supaKey", supaKey || ""); }, [supaKey]);
+  useEffect(() => { localStorage.setItem("waToken", waToken || ""); }, [waToken]);
+  useEffect(() => { localStorage.setItem("waInst", waInst || ""); }, [waInst]);
+
+  // Cancel modal
+  const [cancelModal,setCancelModal] = useState(null); // booking to cancel
+  const [cancelReason,setCancelReason] = useState("");
+  const CANCEL_REASONS = ["تعارض مواعيد","طلب العميل","ظروف طارئة","عدم الحضور","تأجيل لوقت آخر","أخرى"];
+
+  // Redemption system
+  const [redeemModal,setRedeemModal] = useState(null); // {customer, reward}
+  const [redemptions,setRedemptions] = useState({}); // phone -> [{rewardId, date, points}]
+
+  const getRedeemedPoints = (phone) => (redemptions[phone] || []).reduce((s, r) => s + r.points, 0);
+  const getAvailablePoints = (customer) => customer.points - getRedeemedPoints(customer.phone);
+
+  const redeemReward = (customer, reward) => {
+    const available = getAvailablePoints(customer);
+    if (available < reward.points) { setToast({msg:`النقاط غير كافية! متوفر ${available} نقطة`,type:"error"}); return; }
+    setRedeemModal({ customer, reward });
   };
 
-  document.getElementById("result").textContent = "جاري الإرسال...";
+  const confirmRedeem = async () => {
+    if (!redeemModal) return;
+    const { customer, reward } = redeemModal;
+    const newRedemptions = { ...redemptions };
+    if (!newRedemptions[customer.phone]) newRedemptions[customer.phone] = [];
+    newRedemptions[customer.phone].push({ rewardId: reward.id, name: reward.name, points: reward.points, discount: reward.discount, date: new Date().toISOString().split("T")[0] });
+    setRedemptions(newRedemptions);
 
-  try {
-    const res = await fetch("/api/send-whatsapp", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(payload)
-    });
+    // Send WhatsApp notification
+    if (waOk) {
+      const available = getAvailablePoints(customer) - reward.points;
+      try {
+        await fetch("https://whatsbot.at/api/send_pedido", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+          number: fmtPh(customer.phone), type: "text",
+          message: `🎁 مكافأة ولاء - إبداع عمار\n\nمرحباً ${customer.name}،\nتم استبدال نقاطك بنجاح!\n\n🏆 المكافأة: ${reward.name}\n⭐ النقاط المستخدمة: ${reward.points}\n📊 رصيدك المتبقي: ${available} نقطة\n\nأبرز الكوبون عند زيارتك القادمة.\nشكراً لولائك! 💈`,
+          instance_id: waInst, access_token: waToken
+        })});
+        setToast({msg:`تم استبدال ${reward.points} نقطة وإشعار ${customer.name} ✓`,type:"success"});
+      } catch { setToast({msg:"تم الاستبدال (فشل إرسال الإشعار)",type:"info"}); }
+    } else {
+      setToast({msg:`تم استبدال ${reward.points} نقطة ✓`,type:"success"});
+    }
+    setRedeemModal(null);
+  };
 
-    const text = await res.text();
-    document.getElementById("result").textContent = text;
+  const dbOk = Boolean(supaUrl?.trim() && supaKey?.trim());
+  const waOk = Boolean(waToken?.trim() && waInst?.trim());
+  const db = dbOk ? supa(supaUrl, supaKey) : null;
+  const today = new Date().toISOString().split("T")[0];
+  const perPage = 10;
 
-    if (!res.ok) {
-      alert("فشل الإرسال");
-      return;
+  // ═══ Load bookings from Supabase ═══
+  const loadBookings = useCallback(async () => {
+    if (!db) return;
+    setLoading(true);
+    try {
+      const data = await db.get("bookings", "&order=booking_date.desc,booking_time.desc");
+      setBookings(prev => JSON.stringify(prev) === JSON.stringify(data || []) ? prev : (data || []));
+    } catch (e) {
+      setToast({ msg: `خطأ تحميل: ${e.message}`, type: "error" });
+    } finally {
+      setLoading(false);
+    }
+  }, [db]);
+
+  useEffect(() => {
+    if (dbOk) loadBookings();
+  }, [dbOk]);
+
+  // ═══ Auto-Reminder System (30 min before) ═══
+  useEffect(() => {
+    if (!autoRem || !waOk) return;
+
+    const checkReminders = async () => {
+      const now = new Date();
+      const todayStr = now.toISOString().split("T")[0];
+
+      // Find confirmed bookings for today that need reminders
+      const todayConfirmed = bookings.filter(b =>
+        b.booking_date === todayStr &&
+        b.status === "confirmed" &&
+        !reminded.has(b.id)
+      );
+
+      let closestReminder = null;
+
+      for (const bk of todayConfirmed) {
+        const [h, m] = bk.booking_time.split(":");
+        let hour = parseInt(h);
+        if (hour < 8) hour += 12; // PM times
+        const apptTime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hour, parseInt(m));
+        const reminderTime = new Date(apptTime.getTime() - remMinutes * 60000);
+        const diff = reminderTime.getTime() - now.getTime();
+
+        // Track closest upcoming reminder
+        if (diff > 0 && (!closestReminder || diff < closestReminder.diff)) {
+          closestReminder = { booking: bk, diff, time: bk.booking_time };
+        }
+
+        // Send reminder if within 1 minute window of the reminder time
+        if (diff <= 0 && diff > -60000) {
+          try {
+            await fetch("https://whatsbot.at/api/send_pedido", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                number: fmtPh(bk.customer_phone),
+                type: "text",
+                message: MSG.reminder(bk),
+                instance_id: waInst,
+                access_token: waToken,
+              }),
+            });
+            setReminded(prev => new Set([...prev, bk.id]));
+            setBookings(prev => prev.map(b => b.id === bk.id ? { ...b, reminded: true } : b));
+            setToast({ msg: `⏰ تذكير تلقائي: تم إشعار ${bk.customer_name} (${bk.booking_time})`, type: "success" });
+          } catch (e) {
+            console.error("Reminder failed:", e);
+          }
+        }
+      }
+
+      setNextReminder(closestReminder ? {
+        name: closestReminder.booking.customer_name,
+        time: closestReminder.time,
+        minutes: Math.ceil(closestReminder.diff / 60000),
+      } : null);
+    };
+
+    checkReminders();
+    const interval = setInterval(checkReminders, 30000); // Check every 30s
+    return () => clearInterval(interval);
+  }, [autoRem, waOk, bookings, reminded, remMinutes, waInst, waToken]);
+
+  // ═══ Derived data ═══
+  const todayBk = bookings.filter(b=>b.booking_date===today);
+  const cCount = bookings.filter(b=>b.status==="confirmed").length;
+  const pCount = bookings.filter(b=>b.status==="pending").length;
+  const mRev = bookings.filter(b=>{const d=new Date(b.booking_date),n=new Date();return d.getMonth()===n.getMonth()&&d.getFullYear()===n.getFullYear()&&b.status==="confirmed";}).reduce((s,b)=>s+b.price,0);
+
+  // Customers derived
+  const custMap = {};
+  bookings.forEach(b=>{const p=b.customer_phone;if(!custMap[p])custMap[p]={name:b.customer_name,phone:p,branch:b.branch,visits:0,spent:0,last:b.booking_date,svcs:[],confirmedBookings:[]};custMap[p].visits++;if(b.status==="confirmed"){custMap[p].spent+=b.price;custMap[p].confirmedBookings.push(b);}if(b.booking_date>custMap[p].last)custMap[p].last=b.booking_date;if(!custMap[p].svcs.includes(b.service))custMap[p].svcs.push(b.service);});
+  const customers = Object.values(custMap).map(c=>({...c,points:calcPoints(c.confirmedBookings),tier:getTier(calcPoints(c.confirmedBookings))})).sort((a,b)=>b.points-a.points);
+
+  const filt = bookings.filter(b=>{
+    if(branch!=="الكل"&&b.branch!==branch)return false;
+    if(statusF!=="الكل"&&b.status!==statusF)return false;
+    if(search&&!b.customer_name?.includes(search)&&!b.customer_phone?.includes(search)&&!String(b.id).includes(search))return false;
+    return true;
+  });
+  const pg = filt.slice(page*perPage,(page+1)*perPage);
+  const tPg = Math.ceil(filt.length/perPage);
+  useEffect(()=>setPage(0),[branch,search,statusF]);
+
+  const wk = Array.from({length:7},(_,i)=>{const d=new Date();d.setDate(d.getDate()-(6-i));const ds=d.toISOString().split("T")[0];return{day:["أحد","اثنين","ثلاثاء","أربعاء","خميس","جمعة","سبت"][d.getDay()],c:bookings.filter(b=>b.booking_date===ds&&b.status==="confirmed").length,t:ds===today};});
+  const mxW=Math.max(...wk.map(d=>d.c),1);
+
+  const fmtPh = (p) => { let c = String(p || "").replace(/\D/g, ""); if (!c) return ""; if (c.startsWith("00")) c = c.slice(2); if (c.startsWith("966")) return c; if (c.startsWith("05")) return "966" + c.slice(1); if (c.startsWith("5") && c.length === 9) return "966" + c; return c; };
+
+  // ═══ WhatsBot.at Send ═══
+  const sendWA = async (bk, type, reason) => {
+    const token = String(waToken || "").trim();
+    const inst = String(waInst || "").trim();
+    const phone = fmtPh(bk?.customer_phone);
+    const message = type === "cancellation" ? MSG[type](bk, reason) : MSG[type](bk);
+
+    if (!token) {
+      setToast({ msg: "❌ Access Token غير موجود", type: "error" });
+      return false;
+    }
+    if (!inst) {
+      setToast({ msg: "❌ Instance ID غير موجود", type: "error" });
+      return false;
+    }
+    if (!phone) {
+      setToast({ msg: "❌ رقم العميل غير صحيح أو فارغ", type: "error" });
+      return false;
+    }
+    if (!message || !String(message).trim()) {
+      setToast({ msg: "❌ نص الرسالة فارغ", type: "error" });
+      return false;
     }
 
-    alert("✅ تم إرسال الرسالة");
-  } catch (e) {
-    document.getElementById("result").textContent = e.message;
-    alert("❌ خطأ: " + e.message);
-  }
-}
-</script>
+    setSending(true);
+    try {
+      const body = new URLSearchParams();
+      body.append("number", phone);
+      body.append("type", "text");
+      body.append("message", message);
+      body.append("instance_id", inst);
+      body.append("access_token", token);
 
+      console.log("WA BODY:", {
+        number: phone,
+        type: "text",
+        message,
+        instance_id: inst,
+        access_token: token,
+      });
+
+      const res = await fetch("https://whatsbot.at/api/send_pedido", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+        },
+        body: body.toString(),
+      });
+
+      const text = await res.text();
+      console.log("WA RESPONSE:", text);
+
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status} - ${text}`);
+      }
+
+      let data = {};
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = { raw: text };
+      }
+
+      if (data?.status === "error" || data?.success === false || data?.http_code >= 400) {
+        throw new Error(data?.message || "فشل إرسال الرسالة");
+      }
+
+      setToast({
+        msg: `✅ تم إرسال ${type === "confirmation" ? "تأكيد" : type === "reminder" ? "تذكير" : "إلغاء"} لـ ${bk.customer_name}`,
+        type: "success",
+      });
+
+      if (db) {
+        try {
+          await db.update("bookings", bk.id, { notified: true });
+        } catch (e) {
+          console.error("DB notified update failed:", e);
+        }
+      }
+
+      setBookings((prev) => prev.map((b) => (b.id === bk.id ? { ...b, notified: true } : b)));
+      return true;
+    } catch (e) {
+      console.error("WA SEND ERROR:", e);
+      setToast({ msg: `❌ فشل الإرسال: ${e.message}`, type: "error" });
+      return false;
+    } finally {
+      setSending(false);
+    }
+  };
+
+  // ═══ Update Status ═══
+  const updSt = async (bk, ns) => {
+    if (ns === "cancelled") {
+      setCancelModal(bk);
+      setCancelReason("");
+      return;
+    }
+    try {
+      if (!db) {
+        setToast({ msg: "قاعدة البيانات غير متصلة", type: "error" });
+        return;
+      }
+      const updated = await db.update("bookings", bk.id, { status: ns });
+      if (!updated || (Array.isArray(updated) && updated.length === 0)) throw new Error("لم يتم تحديث أي سجل");
+      const up = { ...bk, status: ns };
+      setBookings(p => p.map(b => b.id === bk.id ? { ...b, status: ns } : b));
+      setSel(up);
+      setToast({ msg: "تم حفظ الحالة في قاعدة البيانات ✅", type: "success" });
+      if (ns === "confirmed") {
+        if (!autoConf) {
+          setToast({ msg: "تم التأكيد لكن الإرسال التلقائي مقفول", type: "info" });
+          return;
+        }
+        const sent = await sendWA(up, "confirmation");
+        if (!sent) setToast({ msg: "تم تأكيد الحجز لكن رسالة الواتساب لم تُرسل", type: "error" });
+      }
+    } catch (e) {
+      setToast({ msg: `فشل تحديث الحالة: ${e.message}`, type: "error" });
+    }
+  };
+
+  // Confirm cancellation with reason
+  const confirmCancel = async () => {
+    if (!cancelModal) return;
+    const bk = cancelModal;
+    const reason = cancelReason.trim() || "تم الإلغاء من الإدارة";
+    try {
+      if (!db) {
+        setToast({ msg: "قاعدة البيانات غير متصلة", type: "error" });
+        return;
+      }
+      try {
+        await db.update("bookings", bk.id, { status: "cancelled", cancel_reason: reason });
+      } catch {
+        await db.update("bookings", bk.id, { status: "cancelled" });
+      }
+      const up = { ...bk, status: "cancelled", cancel_reason: reason };
+      setBookings(p => p.map(b => b.id === bk.id ? { ...b, status: "cancelled", cancel_reason: reason } : b));
+      setSel(up);
+      if (autoCanc && waOk) await sendWA(up, "cancellation", reason);
+      setCancelModal(null);
+      setCancelReason("");
+      setToast({ msg: `تم إلغاء حجز ${bk.customer_name} وحفظه في القاعدة ✓`, type: "success" });
+    } catch (e) {
+      setToast({ msg: `❌ فشل حفظ الإلغاء في قاعدة البيانات: ${e.message}`, type: "error" });
+    }
+  };
+
+  // ═══ Bulk Send ═══
+  const sendBulk = async()=>{
+    if(!waOk||!bulkMsg.trim())return;
+    const tg=bulkTarget==="all"?customers:customers.filter(c=>c.branch===(bulkTarget==="riyadh"?"الرياض":"الدمام"));
+    setBulkProg({s:0,t:tg.length,on:true});
+    let s=0;
+    for(const c of tg){
+      try{await fetch("https://whatsbot.at/api/send_pedido",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({number:fmtPh(c.phone),type:"text",message:`💈 إبداع عمار\n\nمرحباً ${c.name}،\n${bulkMsg}`,instance_id:waInst,access_token:waToken})});s++;}catch{}
+      setBulkProg({s,t:tg.length,on:true});
+      await new Promise(r=>setTimeout(r,1500));
+    }
+    setBulkProg({s,t:tg.length,on:false});
+    setToast({msg:`تم إرسال ${s}/${tg.length} رسالة ✓`,type:"success"});
+  };
+
+  const inp={width:"100%",padding:"12px 14px",background:"#1a1a30",border:"1px solid #2a2a4a",borderRadius:10,color:"#e0e0f0",fontSize:14,fontFamily:"'Tajawal',sans-serif",outline:"none"};
+
+  return(
+    <div style={{direction:"rtl",fontFamily:"'Tajawal',sans-serif",background:"#0b0b18",minHeight:"100vh",maxWidth:480,margin:"0 auto",position:"relative",paddingBottom:72,color:"#e0e0f0"}}>
+      <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@300;400;500;700;800;900&display=swap" rel="stylesheet"/>
+      <style>{`*{box-sizing:border-box;margin:0;padding:0}::-webkit-scrollbar{display:none}input::placeholder,textarea::placeholder{color:#555578}textarea{resize:vertical}@keyframes fadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}.ct:active{transform:scale(0.97);opacity:0.9}.ch:active{transform:scale(0.95)}.bt:active{transform:scale(0.95);opacity:0.85}`}</style>
+      {toast&&<Toast msg={toast.msg} type={toast.type} onClose={()=>setToast(null)}/>}
+
+      {/* Header */}
+      <div style={{padding:"20px 20px 16px",background:"linear-gradient(180deg,#131328,#0b0b18)"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <div>
+            <div style={{fontSize:11,color:"#666680",marginBottom:2}}>{new Date().toLocaleDateString("ar-SA",{weekday:"long",day:"numeric",month:"long"})}</div>
+            <h1 style={{fontSize:20,fontWeight:800,color:"#fff",margin:0}}>إبداع عمار 💈</h1>
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:6}}>
+            {dbOk&&<span style={{fontSize:9,background:"#4285f422",color:"#60a5fa",padding:"3px 8px",borderRadius:10}}>DB ✓</span>}
+            {waOk&&<span style={{fontSize:9,background:"#25d36622",color:"#34d399",padding:"3px 8px",borderRadius:10}}>WA Ready</span>}
+            <div style={{width:36,height:36,borderRadius:10,background:"linear-gradient(135deg,#c0a062,#8b6914)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,fontWeight:900,color:"#fff"}}>ع</div>
+          </div>
+        </div>
+      </div>
+
+      {/* ═══ HOME ═══ */}
+      {tab==="home"&&!sub&&(<div style={{padding:"0 16px",animation:"fadeUp 0.3s ease"}}>
+        {!dbOk&&(<div onClick={()=>{setTab("settings");setShowDb(true);}} style={{background:"#1a1a40",border:"1px solid #4285f433",borderRadius:12,padding:"12px 16px",marginBottom:10,cursor:"pointer",display:"flex",alignItems:"center",gap:10}}><span style={{fontSize:18}}>🔗</span><div><div style={{fontSize:13,fontWeight:700,color:"#60a5fa"}}>ربط قاعدة البيانات</div><div style={{fontSize:11,color:"#60a5fa88"}}>Supabase — اضغط للإعداد</div></div></div>)}
+        {!waOk&&(<div onClick={()=>{setTab("settings");setShowWa(true);}} style={{background:"#0d332022",border:"1px solid #25d36633",borderRadius:12,padding:"12px 16px",marginBottom:10,cursor:"pointer",display:"flex",alignItems:"center",gap:10}}><span style={{fontSize:18}}>💬</span><div><div style={{fontSize:13,fontWeight:700,color:"#34d399"}}>ربط WhatsBot</div><div style={{fontSize:11,color:"#34d39988"}}>إشعارات الواتساب</div></div></div>)}
+
+        {loading&&<div style={{textAlign:"center",padding:8,fontSize:12,color:"#c0a062"}}>⏳ جاري التحميل...</div>}
+
+        {/* Next auto-reminder indicator */}
+        {autoRem && waOk && nextReminder && (
+          <div style={{background:"linear-gradient(135deg,#1a1a40,#131328)",border:"1px solid #818cf833",borderRadius:12,padding:"10px 14px",marginBottom:10,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <span style={{fontSize:18,animation:"pulse 2s infinite"}}>⏰</span>
+              <div>
+                <div style={{fontSize:12,fontWeight:700,color:"#818cf8"}}>التذكير القادم</div>
+                <div style={{fontSize:11,color:"#8b8ba3"}}>{nextReminder.name} — الساعة {nextReminder.time}</div>
+              </div>
+            </div>
+            <div style={{background:"#818cf822",padding:"4px 10px",borderRadius:8}}>
+              <span style={{fontSize:12,fontWeight:800,color:"#818cf8"}}>{nextReminder.minutes} د</span>
+            </div>
+          </div>
+        )}
+
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:16}}>
+          {[{i:"📅",l:"اليوم",v:todayBk.length,a:"#34d399"},{i:"💰",l:"الشهر",v:`${(mRev/1000).toFixed(1)}K`,a:"#c0a062"},{i:"⏳",l:"بانتظار",v:pCount,a:"#fbbf24"},{i:"👥",l:"عملاء",v:customers.length,a:"#818cf8"}].map((s,i)=>(<div key={i} style={{background:"#131328",borderRadius:14,padding:"14px 12px",borderRight:`3px solid ${s.a}`}}><div style={{fontSize:20,marginBottom:4}}>{s.i}</div><div style={{fontSize:10,color:"#8b8ba3"}}>{s.l}</div><div style={{fontSize:22,fontWeight:800,color:"#fff"}}>{s.v}</div></div>))}
+        </div>
+
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:16}}>
+          {[{i:"📨",l:"رسائل جماعية",a:()=>setSub("bulk")},{i:"📅",l:"التقويم",a:()=>setToast({msg:"اضغط على أي حجز → إضافة للتقويم",type:"info"})},{i:"🔄",l:"تحديث",a:loadBookings}].map((x,i)=>(<div key={i} className="bt" onClick={x.a} style={{background:"#131328",borderRadius:12,padding:"12px 8px",textAlign:"center",cursor:"pointer"}}><div style={{fontSize:22,marginBottom:4}}>{x.i}</div><div style={{fontSize:10,fontWeight:600,color:"#8b8ba3"}}>{x.l}</div></div>))}
+        </div>
+
+        <div style={{background:"#131328",borderRadius:14,padding:14,marginBottom:16}}>
+          <div style={{fontSize:13,fontWeight:700,color:"#fff",marginBottom:12}}>📈 الأسبوع</div>
+          {wk.map((d,i)=>(<div key={i} style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}><span style={{fontSize:11,color:d.t?"#c0a062":"#666680",width:38,textAlign:"left",fontWeight:d.t?700:400}}>{d.day}</span><div style={{flex:1,height:20,background:"#1a1a30",borderRadius:5,overflow:"hidden"}}><div style={{width:`${Math.max((d.c/mxW)*100,2)}%`,height:"100%",background:d.t?"linear-gradient(90deg,#c0a062,#d4b878)":"#2a2a5a",borderRadius:5,display:"flex",alignItems:"center",justifyContent:"flex-end"}}>{d.c>0&&<span style={{fontSize:10,fontWeight:700,color:d.t?"#fff":"#888",paddingRight:5}}>{d.c}</span>}</div></div></div>))}
+        </div>
+
+        <div style={{display:"flex",justifyContent:"space-between",marginBottom:8}}><span style={{fontSize:13,fontWeight:700,color:"#fff"}}>📋 حجوزات اليوم</span><span onClick={()=>setTab("bookings")} style={{fontSize:11,color:"#c0a062",cursor:"pointer"}}>الكل ←</span></div>
+        {todayBk.length===0?<div style={{background:"#131328",borderRadius:12,padding:20,textAlign:"center",color:"#555578",fontSize:12}}>لا يوجد حجوزات</div>
+        :todayBk.slice(0,4).map((b,i)=>(<div key={b.id} className="ct" onClick={()=>setSel(b)} style={{background:"#131328",borderRadius:12,padding:"12px 14px",marginBottom:6,cursor:"pointer"}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3}}><span style={{fontSize:13,fontWeight:700,color:"#fff"}}>{b.customer_name}</span><Badge status={b.status} small/></div><div style={{fontSize:11,color:"#666680"}}>{b.service} · {b.booking_time} · {b.branch}</div></div><span style={{fontSize:14,fontWeight:800,color:"#c0a062"}}>{b.price}<span style={{fontSize:9}}> ر.س</span></span></div></div>))}
+      </div>)}
+
+      {/* ═══ BULK ═══ */}
+      {tab==="home"&&sub==="bulk"&&(<div style={{padding:"0 16px",animation:"fadeUp 0.3s ease"}}>
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:14}}><span onClick={()=>setSub(null)} style={{fontSize:20,cursor:"pointer",color:"#c0a062"}}>→</span><h2 style={{fontSize:17,fontWeight:800,color:"#fff",margin:0}}>📨 رسائل جماعية</h2></div>
+        <div style={{background:"#131328",borderRadius:14,padding:16,marginBottom:12}}>
+          <div style={{fontSize:12,color:"#8b8ba3",marginBottom:8}}>إرسال إلى:</div>
+          <div style={{display:"flex",gap:6,marginBottom:12}}>{[["all","الكل",customers.length],["riyadh","الرياض",customers.filter(c=>c.branch==="الرياض").length],["dammam","الدمام",customers.filter(c=>c.branch==="الدمام").length]].map(([v,l,n])=>(<button key={v} className="ch" onClick={()=>setBulkTarget(v)} style={{flex:1,padding:"8px",borderRadius:10,border:"none",background:bulkTarget===v?"linear-gradient(135deg,#c0a062,#8b6914)":"#1a1a30",color:bulkTarget===v?"#fff":"#8b8ba3",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"'Tajawal',sans-serif"}}>{l}<br/><span style={{fontSize:9}}>{n}</span></button>))}</div>
+          <textarea value={bulkMsg} onChange={e=>setBulkMsg(e.target.value)} placeholder="اكتب رسالتك..." rows={3} style={{...inp,direction:"rtl",textAlign:"right",minHeight:80}}/>
+          {bulkProg.on&&<div style={{marginTop:10}}><div style={{height:5,background:"#1a1a30",borderRadius:3,overflow:"hidden"}}><div style={{width:`${(bulkProg.s/bulkProg.t)*100}%`,height:"100%",background:"#34d399",borderRadius:3,transition:"width 0.3s"}}/></div><div style={{fontSize:11,color:"#8b8ba3",marginTop:4,textAlign:"center"}}>{bulkProg.s}/{bulkProg.t}</div></div>}
+          <button className="bt" disabled={!waOk||!bulkMsg.trim()||bulkProg.on} onClick={sendBulk} style={{width:"100%",padding:12,borderRadius:10,border:"none",background:bulkProg.on?"#2a2a4a":"#25d366",color:"#fff",fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif",marginTop:10,opacity:(!waOk||!bulkMsg.trim())?0.5:1}}>{bulkProg.on?`${bulkProg.s}/${bulkProg.t}`:"💬 إرسال"}</button>
+        </div>
+        <div style={{background:"#131328",borderRadius:14,padding:14}}>
+          <div style={{fontSize:12,fontWeight:700,color:"#fff",marginBottom:8}}>📝 قوالب:</div>
+          {["🔥 خصم 15% على تركيب الشعر هذا الأسبوع!","⭐ أوقات العمل: السبت-الخميس 9ص-9م","🎁 استشارة مجانية عند أول زيارة!"].map((m,i)=>(<div key={i} className="ct" onClick={()=>setBulkMsg(m)} style={{padding:"8px 10px",background:"#1a1a30",borderRadius:8,marginBottom:4,cursor:"pointer",fontSize:11,color:"#8b8ba3"}}>{m}</div>))}
+        </div>
+      </div>)}
+
+      {/* ═══ BOOKINGS ═══ */}
+      {tab==="bookings"&&(<div style={{padding:"0 16px",animation:"fadeUp 0.3s ease"}}>
+        <div style={{position:"relative",marginBottom:10}}><span style={{position:"absolute",right:12,top:"50%",transform:"translateY(-50%)",fontSize:14,color:"#555578"}}>🔍</span><input type="text" placeholder="بحث..." value={search} onChange={e=>setSearch(e.target.value)} style={{...inp,padding:"11px 36px 11px 11px",direction:"rtl",textAlign:"right"}}/></div>
+        <div style={{display:"flex",gap:5,marginBottom:6,overflowX:"auto",paddingBottom:3}}>
+          {["الكل","الرياض","الدمام"].map(b=>(<button key={b} className="ch" onClick={()=>setBranch(b)} style={{padding:"6px 12px",borderRadius:18,border:"none",background:branch===b?"linear-gradient(135deg,#c0a062,#8b6914)":"#1a1a30",color:branch===b?"#fff":"#8b8ba3",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"'Tajawal',sans-serif",whiteSpace:"nowrap"}}>{b}</button>))}
+          <div style={{width:1,background:"#2a2a4a",margin:"0 2px",flexShrink:0}}/>
+          {["الكل","confirmed","pending","cancelled"].map(s=>(<button key={s} className="ch" onClick={()=>setStatusF(s)} style={{padding:"6px 10px",borderRadius:18,border:"none",background:statusF===s?"#2a2a4a":"#1a1a30",color:statusF===s?"#fff":"#8b8ba3",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"'Tajawal',sans-serif",whiteSpace:"nowrap"}}>{s==="الكل"?"الكل":STATUSES[s]}</button>))}
+        </div>
+        <div style={{fontSize:11,color:"#555578",marginBottom:8}}>{filt.length} حجز</div>
+        {pg.map((b,i)=>(<div key={b.id} className="ct" onClick={()=>setSel(b)} style={{background:"#131328",borderRadius:12,padding:"12px 14px",marginBottom:6,cursor:"pointer",animation:`fadeUp 0.2s ease ${i*0.02}s both`}}>
+          <div style={{display:"flex",justifyContent:"space-between",marginBottom:6}}><div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}><span style={{fontSize:14,fontWeight:700,color:"#fff"}}>{b.customer_name}</span><Badge status={b.status} small/>{b.notified&&<span style={{fontSize:9,color:"#34d399"}}>✓</span>}{b.reminded&&<span style={{fontSize:9,color:"#818cf8"}}>⏰</span>}</div><span style={{fontSize:10,color:"#555578"}}>#{b.id}</span></div>
+          <div style={{display:"flex",justifyContent:"space-between"}}><span style={{fontSize:11,color:"#8b8ba3"}}>✂️{b.service} · 📍{b.branch}</span><span style={{fontSize:13,fontWeight:800,color:"#c0a062"}}>{b.price}<span style={{fontSize:9}}> ر.س</span></span></div>
+          <div style={{fontSize:10,color:"#555578",marginTop:4}}>📅 {b.booking_date} · 🕐 {b.booking_time}</div>
+        </div>))}
+        {tPg>1&&<div style={{display:"flex",justifyContent:"center",gap:12,padding:"12px 0"}}><button disabled={page===0} onClick={()=>setPage(p=>p-1)} style={{padding:"8px 16px",borderRadius:8,border:"none",background:page===0?"#131328":"#2a2a4a",color:page===0?"#333":"#fff",fontSize:12,fontWeight:600,cursor:page===0?"default":"pointer",fontFamily:"'Tajawal',sans-serif"}}>←</button><span style={{fontSize:12,color:"#8b8ba3",alignSelf:"center"}}>{page+1}/{tPg}</span><button disabled={page>=tPg-1} onClick={()=>setPage(p=>p+1)} style={{padding:"8px 16px",borderRadius:8,border:"none",background:page>=tPg-1?"#131328":"#2a2a4a",color:page>=tPg-1?"#333":"#fff",fontSize:12,fontWeight:600,cursor:page>=tPg-1?"default":"pointer",fontFamily:"'Tajawal',sans-serif"}}>→</button></div>}
+      </div>)}
+
+      {/* ═══ CUSTOMERS ═══ */}
+      {tab==="customers"&&!selCust&&(<div style={{padding:"0 16px",animation:"fadeUp 0.3s ease"}}>
+        <h2 style={{fontSize:17,fontWeight:800,color:"#fff",margin:"0 0 12px"}}>👥 العملاء ({customers.length})</h2>
+
+        {/* Loyalty overview */}
+        <div style={{display:"flex",gap:8,marginBottom:14,overflowX:"auto",paddingBottom:4}}>
+          {LOYALTY_TIERS.map((t,i)=>{const count=customers.filter(c=>getTier(c.points)===t).length;return(
+            <div key={i} style={{flex:"0 0 auto",minWidth:80,background:t.bg,border:`1px solid ${t.color}22`,borderRadius:12,padding:"10px 12px",textAlign:"center"}}>
+              <div style={{fontSize:20}}>{t.icon}</div>
+              <div style={{fontSize:10,color:t.color,fontWeight:700,marginTop:2}}>{t.name}</div>
+              <div style={{fontSize:18,fontWeight:800,color:"#fff"}}>{count}</div>
+            </div>
+          );})}
+        </div>
+
+        <input placeholder="بحث..." value={search} onChange={e=>setSearch(e.target.value)} style={{...inp,marginBottom:10,direction:"rtl",textAlign:"right"}}/>
+        {customers.filter(c=>!search||c.name.includes(search)||c.phone.includes(search)).map((c,i)=>(<div key={i} className="ct" onClick={()=>setSelCust(c)} style={{background:"#131328",borderRadius:12,padding:"12px 14px",marginBottom:6,cursor:"pointer"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <div style={{width:36,height:36,borderRadius:10,background:c.tier.bg,border:`1px solid ${c.tier.color}33`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18}}>{c.tier.icon}</div>
+              <div><div style={{display:"flex",alignItems:"center",gap:6}}><span style={{fontSize:13,fontWeight:700,color:"#fff"}}>{c.name}</span><span style={{fontSize:9,color:c.tier.color,fontWeight:600,background:c.tier.bg,padding:"1px 6px",borderRadius:8}}>{c.tier.name}</span></div><div style={{fontSize:11,color:"#666680",direction:"ltr",textAlign:"right"}}>{c.phone}</div></div>
+            </div>
+            <div style={{textAlign:"left"}}><div style={{fontSize:15,fontWeight:800,color:"#c0a062"}}>{c.points}<span style={{fontSize:9,color:"#8b8ba3"}}> نقطة</span></div><div style={{fontSize:9,color:"#666680"}}>{c.visits} زيارة</div></div>
+          </div>
+          {/* Points progress bar */}
+          <div style={{height:4,background:"#1a1a30",borderRadius:2,overflow:"hidden"}}>
+            <div style={{width:`${getProgress(c.points)}%`,height:"100%",background:`linear-gradient(90deg,${c.tier.color},${c.tier.color}88)`,borderRadius:2,transition:"width 0.5s"}}/>
+          </div>
+        </div>))}
+      </div>)}
+
+      {/* Customer Detail + Loyalty Card */}
+      {tab==="customers"&&selCust&&(()=>{
+        const nextTier = getNextTier(selCust.points);
+        const progress = getProgress(selCust.points);
+        const pointsToNext = nextTier ? nextTier.min - selCust.points : 0;
+        return(<div style={{padding:"0 16px",animation:"fadeUp 0.3s ease"}}>
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:14}}><span onClick={()=>setSelCust(null)} style={{fontSize:20,cursor:"pointer",color:"#c0a062"}}>→</span><h2 style={{fontSize:17,fontWeight:800,color:"#fff",margin:0}}>{selCust.name}</h2></div>
+
+        {/* ⭐ Loyalty Card */}
+        <div style={{background:`linear-gradient(145deg, ${selCust.tier.color}15, #131328)`,borderRadius:16,padding:18,marginBottom:12,border:`1px solid ${selCust.tier.color}22`,position:"relative",overflow:"hidden"}}>
+          <div style={{position:"absolute",top:-20,left:-20,width:100,height:100,borderRadius:"50%",background:`${selCust.tier.color}08`}}/>
+          <div style={{position:"absolute",bottom:-30,right:-30,width:80,height:80,borderRadius:"50%",background:`${selCust.tier.color}06`}}/>
+
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:14,position:"relative"}}>
+            <div>
+              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
+                <span style={{fontSize:32}}>{selCust.tier.icon}</span>
+                <div>
+                  <div style={{fontSize:16,fontWeight:800,color:selCust.tier.color}}>{selCust.tier.name}</div>
+                  <div style={{fontSize:11,color:"#8b8ba3"}}>بطاقة الولاء</div>
+                </div>
+              </div>
+            </div>
+            <div style={{textAlign:"left"}}>
+              <div style={{fontSize:28,fontWeight:900,color:"#fff"}}>{selCust.points}</div>
+              <div style={{fontSize:10,color:"#8b8ba3"}}>نقطة</div>
+            </div>
+          </div>
+
+          {/* Progress to next tier */}
+          {nextTier&&(<div>
+            <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:"#8b8ba3",marginBottom:4}}>
+              <span>{selCust.tier.icon} {selCust.tier.name}</span>
+              <span>{nextTier.icon} {nextTier.name} ({pointsToNext} نقطة متبقية)</span>
+            </div>
+            <div style={{height:6,background:"#1a1a30",borderRadius:3,overflow:"hidden"}}>
+              <div style={{width:`${progress}%`,height:"100%",background:`linear-gradient(90deg,${selCust.tier.color},${nextTier.color})`,borderRadius:3,transition:"width 0.6s"}}/>
+            </div>
+          </div>)}
+          {!nextTier&&<div style={{fontSize:12,color:selCust.tier.color,textAlign:"center",fontWeight:700}}>🎉 أعلى مستوى — عميل مميز!</div>}
+        </div>
+
+        {/* Points breakdown */}
+        <div style={{background:"#131328",borderRadius:14,padding:14,marginBottom:12}}>
+          <div style={{fontSize:13,fontWeight:700,color:"#fff",marginBottom:10}}>⭐ تفاصيل النقاط</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+            <div style={{background:"#1a1a30",borderRadius:10,padding:"10px 12px",textAlign:"center"}}>
+              <div style={{fontSize:10,color:"#8b8ba3",marginBottom:4}}>✂️ تركيب شعر</div>
+              <div style={{fontSize:14,fontWeight:800,color:"#c0a062"}}>{selCust.confirmedBookings?.filter(b=>b.service==="تركيب شعر").length||0} × {POINTS_PER_SERVICE["تركيب شعر"]}</div>
+              <div style={{fontSize:10,color:"#666680"}}>{(selCust.confirmedBookings?.filter(b=>b.service==="تركيب شعر").length||0) * POINTS_PER_SERVICE["تركيب شعر"]} نقطة</div>
+            </div>
+            <div style={{background:"#1a1a30",borderRadius:10,padding:"10px 12px",textAlign:"center"}}>
+              <div style={{fontSize:10,color:"#8b8ba3",marginBottom:4}}>🔄 تغيير لاصق</div>
+              <div style={{fontSize:14,fontWeight:800,color:"#c0a062"}}>{selCust.confirmedBookings?.filter(b=>b.service==="تغيير لاصق").length||0} × {POINTS_PER_SERVICE["تغيير لاصق"]}</div>
+              <div style={{fontSize:10,color:"#666680"}}>{(selCust.confirmedBookings?.filter(b=>b.service==="تغيير لاصق").length||0) * POINTS_PER_SERVICE["تغيير لاصق"]} نقطة</div>
+            </div>
+          </div>
+          <div style={{background:"#1a1a30",borderRadius:10,padding:"8px 12px",marginTop:8,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <span style={{fontSize:11,color:"#8b8ba3"}}>🎁 مكافأة الحضور ({ATTENDANCE_BONUS} لكل زيارة)</span>
+            <span style={{fontSize:13,fontWeight:700,color:"#34d399"}}>+{(selCust.confirmedBookings?.length||0) * ATTENDANCE_BONUS}</span>
+          </div>
+        </div>
+
+        {/* Customer info */}
+        <div style={{background:"#131328",borderRadius:14,padding:14,marginBottom:10}}>
+          {[["📱","الجوال",selCust.phone],["📍","الفرع",selCust.branch],["🔄","الزيارات",selCust.visits],["💰","الإنفاق",`${selCust.spent.toLocaleString()} ر.س`],["📅","آخر زيارة",selCust.last]].map(([i,l,v],j)=>(<div key={j} style={{display:"flex",justifyContent:"space-between",padding:"10px 0",borderBottom:j<4?"1px solid #1a1a30":"none"}}><span style={{fontSize:12,color:"#8b8ba3"}}>{i} {l}</span><span style={{fontSize:13,fontWeight:600,color:"#e0e0f0"}}>{v}</span></div>))}
+        </div>
+
+        {/* Booking history with points earned */}
+        <div style={{background:"#131328",borderRadius:14,padding:14,marginBottom:10}}>
+          <div style={{fontSize:12,fontWeight:700,color:"#fff",marginBottom:8}}>سجل الحجوزات والنقاط:</div>
+          {bookings.filter(b=>b.customer_phone===selCust.phone).slice(0,6).map(b=>{const pts=b.status==="confirmed"?(POINTS_PER_SERVICE[b.service]||0)+ATTENDANCE_BONUS:0;return(
+            <div key={b.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:"1px solid #1a1a30"}}>
+              <div><div style={{fontSize:12,color:"#e0e0f0"}}>{b.service}</div><div style={{fontSize:10,color:"#555578"}}>{b.booking_date} · {b.booking_time}</div></div>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                {pts>0&&<span style={{fontSize:10,color:"#34d399",fontWeight:700}}>+{pts} ⭐</span>}
+                <Badge status={b.status} small/>
+              </div>
+            </div>);})}
+        </div>
+
+        {/* 🎁 Available Rewards */}
+        <div style={{background:"#131328",borderRadius:14,padding:14,marginBottom:10}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+            <span style={{fontSize:13,fontWeight:700,color:"#fff"}}>🎁 استبدال النقاط</span>
+            <span style={{fontSize:12,fontWeight:800,color:"#c0a062"}}>{getAvailablePoints(selCust)} نقطة متاحة</span>
+          </div>
+
+          {getRedeemedPoints(selCust.phone) > 0 && (
+            <div style={{fontSize:11,color:"#8b8ba3",marginBottom:8,padding:"6px 10px",background:"#1a1a30",borderRadius:8}}>
+              ⭐ إجمالي: {selCust.points} | 🔄 مستبدل: {getRedeemedPoints(selCust.phone)} | 📊 متبقي: {getAvailablePoints(selCust)}
+            </div>
+          )}
+
+          {REWARDS.map((rw,i) => {
+            const available = getAvailablePoints(selCust);
+            const canRedeem = available >= rw.points;
+            return (
+              <div key={rw.id} onClick={()=>canRedeem && redeemReward(selCust, rw)} style={{
+                display:"flex",alignItems:"center",gap:10,
+                padding:"10px 12px",background:canRedeem?"#1a1a30":"#0d0d1a",
+                borderRadius:10,marginBottom:6,cursor:canRedeem?"pointer":"default",
+                opacity:canRedeem?1:0.4,transition:"all 0.15s",
+                border:canRedeem?"1px solid #2a2a4a":"1px solid transparent",
+              }}>
+                <div style={{width:36,height:36,borderRadius:10,background:canRedeem?"#c0a06215":"#1a1a30",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20}}>{rw.icon}</div>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:12,fontWeight:700,color:canRedeem?"#fff":"#555578"}}>{rw.name}</div>
+                  <div style={{fontSize:10,color:canRedeem?"#c0a062":"#444"}}>{rw.points} نقطة → خصم {rw.discount} ر.س</div>
+                </div>
+                <div style={{fontSize:11,fontWeight:700,color:canRedeem?"#34d399":"#555578",background:canRedeem?"#0d332033":"transparent",padding:"4px 10px",borderRadius:8}}>
+                  {canRedeem?"استبدال":"غير كافٍ"}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Redemption History */}
+        {(redemptions[selCust.phone]||[]).length > 0 && (
+          <div style={{background:"#131328",borderRadius:14,padding:14,marginBottom:10}}>
+            <div style={{fontSize:13,fontWeight:700,color:"#fff",marginBottom:8}}>📜 سجل الاستبدال</div>
+            {(redemptions[selCust.phone]||[]).map((rd,i) => (
+              <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:i<(redemptions[selCust.phone].length-1)?"1px solid #1a1a30":"none"}}>
+                <div>
+                  <div style={{fontSize:12,color:"#e0e0f0"}}>{rd.name}</div>
+                  <div style={{fontSize:10,color:"#555578"}}>{rd.date}</div>
+                </div>
+                <div style={{textAlign:"left"}}>
+                  <div style={{fontSize:11,fontWeight:700,color:"#f87171"}}>-{rd.points} نقطة</div>
+                  <div style={{fontSize:10,color:"#34d399"}}>خصم {rd.discount} ر.س</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div style={{display:"flex",gap:8}}>
+          <a href={`https://wa.me/966${selCust.phone.slice(1)}`} target="_blank" rel="noreferrer" style={{flex:1,padding:12,borderRadius:10,background:"#25d366",color:"#fff",fontSize:14,fontWeight:700,textAlign:"center",textDecoration:"none",fontFamily:"'Tajawal',sans-serif"}}>💬 واتساب</a>
+          <a href={`tel:${selCust.phone}`} style={{flex:1,padding:12,borderRadius:10,background:"#2a2a4a",color:"#fff",fontSize:14,fontWeight:700,textAlign:"center",textDecoration:"none",fontFamily:"'Tajawal',sans-serif"}}>📞 اتصال</a>
+        </div>
+      </div>);})()}
+
+      {/* ═══ SETTINGS ═══ */}
+      {tab==="settings"&&(<div style={{padding:"0 16px",animation:"fadeUp 0.3s ease"}}>
+        {/* Supabase */}
+        <div style={{background:"#131328",borderRadius:14,padding:16,marginBottom:10}}>
+          <div onClick={()=>setShowDb(!showDb)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer"}}>
+            <div style={{display:"flex",alignItems:"center",gap:10}}><div style={{width:38,height:38,borderRadius:10,background:"#4285f422",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18}}>🔗</div><div><div style={{fontSize:13,fontWeight:700,color:"#fff"}}>قاعدة البيانات</div><div style={{fontSize:11,color:dbOk?"#34d399":"#666680"}}>{dbOk?"✅ متصل — Supabase":"أدخل بيانات Supabase"}</div></div></div>
+            <span style={{color:"#555578",transform:showDb?"rotate(90deg)":"none",transition:"0.2s"}}>←</span>
+          </div>
+          {showDb&&(<div style={{marginTop:14,paddingTop:14,borderTop:"1px solid #1a1a30"}}>
+            <div style={{marginBottom:10}}><label style={{fontSize:11,color:"#8b8ba3",marginBottom:4,display:"block"}}>Project URL</label><input placeholder="https://xxxxx.supabase.co" value={supaUrl} onChange={e=>setSupaUrl(e.target.value.trim())} style={{...inp,direction:"ltr",textAlign:"left"}}/></div>
+            <div style={{marginBottom:10}}><label style={{fontSize:11,color:"#8b8ba3",marginBottom:4,display:"block"}}>Anon Key</label><input placeholder="eyJ..." value={supaKey} onChange={e=>setSupaKey(e.target.value.trim())} style={{...inp,direction:"ltr",textAlign:"left",fontSize:12}}/></div>
+            <button className="bt" onClick={async()=>{if(!supaUrl||!supaKey)return;setLoading(true);try{const d=await supa(supaUrl,supaKey).get("bookings","&limit=1");setToast({msg:d?"✅ متصل بنجاح!":"فشل",type:d?"success":"error"});}catch(e){setToast({msg:`خطأ: ${e.message}`,type:"error"});}finally{setLoading(false);}}} style={{width:"100%",padding:11,borderRadius:10,border:"none",background:"linear-gradient(135deg,#4285f4,#2563eb)",color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif"}}>🧪 تجربة الاتصال</button>
+          </div>)}
+        </div>
+
+        {/* WhatsBot */}
+        <div style={{background:"#131328",borderRadius:14,padding:16,marginBottom:10}}>
+          <div onClick={()=>setShowWa(!showWa)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer"}}>
+            <div style={{display:"flex",alignItems:"center",gap:10}}><div style={{width:38,height:38,borderRadius:10,background:"#25d36622",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18}}>💬</div><div><div style={{fontSize:13,fontWeight:700,color:"#fff"}}>WhatsBot.at</div><div style={{fontSize:11,color:waOk?"#34d399":"#666680"}}>{waOk?"✅ البيانات محفوظة":"أدخل بيانات WhatsBot"}</div></div></div>
+            <span style={{color:"#555578",transform:showWa?"rotate(90deg)":"none",transition:"0.2s"}}>←</span>
+          </div>
+          {showWa&&(<div style={{marginTop:14,paddingTop:14,borderTop:"1px solid #1a1a30"}}>
+            <div style={{marginBottom:10}}><label style={{fontSize:"11px",color:"#8b8ba3",marginBottom:4,display:"block"}}>Access Token *</label><input placeholder="أدخل Access Token" value={waToken} onChange={e=>setWaToken(e.target.value.trim())} style={{...inp,direction:"ltr",textAlign:"left"}}/></div>
+            <div style={{marginBottom:10}}><label style={{fontSize:11,color:"#8b8ba3",marginBottom:4,display:"block"}}>Instance ID *</label><input placeholder="609ACF283XXXX" value={waInst} onChange={e=>setWaInst(e.target.value.trim())} style={{...inp,direction:"ltr",textAlign:"left"}}/></div>
+            <button className="bt" disabled={!waInst || !waToken || sending} onClick={async()=>{const fakeBooking={id:999999,customer_name:"عميل تجريبي",customer_phone:"0551234567",service:"تركيب شعر",branch:"الرياض",booking_date:new Date().toISOString().split("T")[0],booking_time:"05:00",price:1700};await sendWA(fakeBooking,"confirmation");}} style={{width:"100%",padding:11,borderRadius:10,border:"none",background:"#25d366",color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif",opacity:(waInst&&waToken)?1:0.5}}>🧪 تجربة</button>
+          </div>)}
+        </div>
+
+        {/* Auto notifications */}
+        <div style={{background:"#131328",borderRadius:14,padding:16,marginBottom:10}}>
+          <div style={{fontSize:13,fontWeight:700,color:"#fff",marginBottom:2}}>🔔 إشعارات تلقائية</div>
+          <Toggle label="✅ تأكيد الحجز" value={autoConf} onChange={()=>setAutoConf(!autoConf)}/>
+          <Toggle label="❌ إلغاء الحجز" value={autoCanc} onChange={()=>setAutoCanc(!autoCanc)}/>
+          <Toggle label="⏰ تذكير قبل الموعد" value={autoRem} onChange={()=>setAutoRem(!autoRem)}/>
+
+          {/* Reminder timing */}
+          {autoRem && (
+            <div style={{padding:"12px 0",borderBottom:"1px solid #1a1a30"}}>
+              <div style={{fontSize:12,color:"#8b8ba3",marginBottom:8}}>⏱️ وقت التذكير قبل الموعد:</div>
+              <div style={{display:"flex",gap:6}}>
+                {[{v:15,l:"15 دقيقة"},{v:30,l:"نص ساعة"},{v:60,l:"ساعة"},{v:120,l:"ساعتين"}].map(t=>(
+                  <button key={t.v} className="ch" onClick={()=>setRemMinutes(t.v)} style={{
+                    flex:1,padding:"8px 4px",borderRadius:8,border:"none",
+                    background:remMinutes===t.v?"linear-gradient(135deg,#818cf8,#6366f1)":"#1a1a30",
+                    color:remMinutes===t.v?"#fff":"#8b8ba3",
+                    fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"'Tajawal',sans-serif",
+                  }}>{t.l}</button>
+                ))}
+              </div>
+              {waOk && (
+                <div style={{marginTop:8,padding:"8px 10px",background:"#818cf811",borderRadius:8,fontSize:11,color:"#818cf8",display:"flex",alignItems:"center",gap:6}}>
+                  <span style={{fontSize:14}}>⏰</span>
+                  <span>سيتم إرسال تذكير واتساب تلقائي قبل {remMinutes} دقيقة من كل موعد مؤكد</span>
+                </div>
+              )}
+              {!waOk && (
+                <div style={{marginTop:8,fontSize:11,color:"#f87171"}}>⚠️ ربط WhatsBot أولاً لتفعيل التذكير التلقائي</div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Google Calendar */}
+        <div style={{background:"#131328",borderRadius:14,padding:16,marginBottom:10}}>
+          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}><div style={{width:38,height:38,borderRadius:10,background:"#4285f422",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18}}>📅</div><div><div style={{fontSize:13,fontWeight:700,color:"#fff"}}>Google Calendar</div><div style={{fontSize:11,color:"#666680"}}>إضافة حجوزات للتقويم</div></div></div>
+          <div style={{fontSize:11,color:"#8b8ba3",padding:"8px 10px",background:"#1a1a30",borderRadius:8}}>من تفاصيل أي حجز → زر "📅 إضافة للتقويم" يضيفه مباشرة لـ Google Calendar</div>
+        </div>
+
+        {[{i:"🏢",l:"الفروع",d:"الرياض، الدمام"},{i:"✂️",l:"الخدمات",d:"تركيب شعر، تغيير لاصق"}].map((x,i)=>(<div key={i} className="ct" style={{background:"#131328",borderRadius:14,padding:14,marginBottom:8,display:"flex",alignItems:"center",gap:12}}><div style={{width:38,height:38,borderRadius:10,background:"#1a1a30",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18}}>{x.i}</div><div style={{flex:1}}><div style={{fontSize:13,fontWeight:700,color:"#fff"}}>{x.l}</div><div style={{fontSize:11,color:"#666680"}}>{x.d}</div></div></div>))}
+      </div>)}
+
+      {/* ═══ Nav ═══ */}
+      <div style={{position:"fixed",bottom:0,left:"50%",transform:"translateX(-50%)",width:"100%",maxWidth:480,background:"linear-gradient(180deg,rgba(11,11,24,0.97),#0b0b18)",borderTop:"1px solid #1f1f3a",display:"flex",justifyContent:"space-around",padding:"6px 0 10px",zIndex:50}}>
+        {[{id:"home",i:"🏠",l:"الرئيسية"},{id:"bookings",i:"📋",l:"الحجوزات"},{id:"customers",i:"👥",l:"العملاء"},{id:"settings",i:"⚙️",l:"الإعدادات"}].map(x=>(<div key={x.id} onClick={()=>{setTab(x.id);setSub(null);setSelCust(null);}} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:1,cursor:"pointer",padding:"4px 10px"}}><span style={{fontSize:20,filter:tab===x.id?"none":"grayscale(1) opacity(0.5)"}}>{x.i}</span><span style={{fontSize:9,fontWeight:tab===x.id?700:400,color:tab===x.id?"#c0a062":"#555578"}}>{x.l}</span>{tab===x.id&&<div style={{width:4,height:4,borderRadius:"50%",background:"#c0a062"}}/>}</div>))}
+      </div>
+
+      {/* ═══ Booking Sheet ═══ */}
+      {sel&&(<div onClick={()=>setSel(null)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.75)",display:"flex",alignItems:"flex-end",justifyContent:"center",zIndex:100}}>
+        <div onClick={e=>e.stopPropagation()} style={{background:"#131328",borderRadius:"20px 20px 0 0",padding:"8px 20px 28px",width:"100%",maxWidth:480,maxHeight:"85vh",overflowY:"auto",animation:"fadeUp 0.3s ease"}}>
+          <div style={{display:"flex",justifyContent:"center",padding:"6px 0 12px"}}><div style={{width:32,height:4,borderRadius:2,background:"#2a2a4a"}}/></div>
+          <div style={{display:"flex",justifyContent:"space-between",marginBottom:14}}><h3 style={{fontSize:17,fontWeight:800,color:"#fff",margin:0}}>حجز #{sel.id}</h3><Badge status={sel.status}/></div>
+          {[["👤",sel.customer_name],["📱",sel.customer_phone],["🏢",sel.branch],["✂️",sel.service],["💰",`${sel.price} ر.س`],["📅",sel.booking_date],["🕐",sel.booking_time],["💳",sel.payment_method]].map(([i,v],j)=>(<div key={j} style={{display:"flex",justifyContent:"space-between",padding:"9px 0",borderBottom:j<7?"1px solid #1a1a30":"none"}}><span style={{fontSize:12,color:"#8b8ba3"}}>{i}</span><span style={{fontSize:13,fontWeight:600,color:"#e0e0f0"}}>{v}</span></div>))}
+
+          <div style={{display:"flex",gap:6,marginTop:12}}>
+            {sel.status!=="confirmed"&&<button className="bt" onClick={()=>updSt(sel,"confirmed")} style={{flex:1,padding:9,borderRadius:9,border:"none",background:"#0d3320",color:"#34d399",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif"}}>✅ تأكيد</button>}
+            {sel.status!=="cancelled"&&<button className="bt" onClick={()=>updSt(sel,"cancelled")} style={{flex:1,padding:9,borderRadius:9,border:"none",background:"#3b1118",color:"#f87171",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif"}}>❌ إلغاء</button>}
+          </div>
+
+          <div style={{fontSize:11,fontWeight:700,color:"#8b8ba3",marginTop:10,marginBottom:6}}>📨 إشعار واتساب:</div>
+          <div style={{display:"flex",gap:5}}>
+            <button className="bt" disabled={sending} onClick={()=>sendWA(sel,"confirmation")} style={{flex:1,padding:9,borderRadius:9,border:"none",background:"#0d3320",color:"#34d399",fontSize:12,fontWeight:700,cursor:sending?"wait":"pointer",fontFamily:"'Tajawal',sans-serif",opacity:sending?0.5:1}}>✅</button>
+            <button className="bt" disabled={sending} onClick={()=>sendWA(sel,"reminder")} style={{flex:1,padding:9,borderRadius:9,border:"none",background:"#3b2f0a",color:"#fbbf24",fontSize:12,fontWeight:700,cursor:sending?"wait":"pointer",fontFamily:"'Tajawal',sans-serif",opacity:sending?0.5:1}}>⏰</button>
+            <button className="bt" disabled={sending} onClick={()=>{setCancelModal(sel);setCancelReason("");}} style={{flex:1,padding:9,borderRadius:9,border:"none",background:"#3b1118",color:"#f87171",fontSize:12,fontWeight:700,cursor:sending?"wait":"pointer",fontFamily:"'Tajawal',sans-serif",opacity:sending?0.5:1}}>❌ إلغاء+سبب</button>
+          </div>
+
+          <div style={{display:"flex",gap:8,marginTop:12}}>
+            <a href={`https://wa.me/966${sel.customer_phone?.slice(1)}`} target="_blank" rel="noreferrer" style={{flex:1,padding:12,borderRadius:10,background:"#25d366",color:"#fff",fontSize:14,fontWeight:700,textAlign:"center",textDecoration:"none",fontFamily:"'Tajawal',sans-serif"}}>💬 واتساب</a>
+            <a href={`tel:${sel.customer_phone}`} style={{flex:1,padding:12,borderRadius:10,background:"#2a2a4a",color:"#fff",fontSize:14,fontWeight:700,textAlign:"center",textDecoration:"none",fontFamily:"'Tajawal',sans-serif"}}>📞 اتصال</a>
+          </div>
+        </div>
+      </div>)}
+
+      {/* ═══ Cancel Reason Modal ═══ */}
+      {cancelModal&&(
+        <div onClick={()=>{setCancelModal(null);setCancelReason("");}} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.8)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:150,backdropFilter:"blur(6px)"}}>
+          <div onClick={e=>e.stopPropagation()} style={{background:"#131328",borderRadius:20,padding:"24px 20px",width:"92%",maxWidth:400,animation:"fadeUp 0.3s ease",border:"1px solid #3b1118"}}>
+            {/* Header */}
+            <div style={{textAlign:"center",marginBottom:20}}>
+              <div style={{width:56,height:56,borderRadius:16,background:"#3b111844",margin:"0 auto 12px",display:"flex",alignItems:"center",justifyContent:"center",fontSize:28}}>❌</div>
+              <h3 style={{fontSize:18,fontWeight:800,color:"#fff",margin:"0 0 4px"}}>إلغاء الحجز</h3>
+              <p style={{fontSize:13,color:"#8b8ba3",margin:0}}>حجز <span style={{color:"#f87171",fontWeight:700}}>#{cancelModal.id}</span> — {cancelModal.customer_name}</p>
+            </div>
+
+            {/* Booking summary */}
+            <div style={{background:"#1a1a30",borderRadius:12,padding:"10px 14px",marginBottom:16,display:"flex",justifyContent:"space-between",fontSize:12,color:"#8b8ba3"}}>
+              <span>✂️ {cancelModal.service}</span>
+              <span>📅 {cancelModal.booking_date}</span>
+              <span>🕐 {cancelModal.booking_time}</span>
+            </div>
+
+            {/* Quick reasons */}
+            <div style={{fontSize:12,fontWeight:700,color:"#e0e0f0",marginBottom:8}}>📌 اختر السبب:</div>
+            <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:12}}>
+              {CANCEL_REASONS.map((reason,i)=>(
+                <button key={i} className="ch" onClick={()=>setCancelReason(reason)} style={{
+                  padding:"7px 12px",borderRadius:20,border:"none",
+                  background:cancelReason===reason?"#f8717133":"#1a1a30",
+                  color:cancelReason===reason?"#f87171":"#8b8ba3",
+                  fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"'Tajawal',sans-serif",
+                  border:cancelReason===reason?"1px solid #f8717155":"1px solid transparent",
+                  transition:"all 0.15s",
+                }}>{reason}</button>
+              ))}
+            </div>
+
+            {/* Custom reason */}
+            <div style={{fontSize:12,fontWeight:700,color:"#e0e0f0",marginBottom:6}}>✏️ أو اكتب سبب مخصص:</div>
+            <textarea
+              value={cancelReason}
+              onChange={e=>setCancelReason(e.target.value)}
+              placeholder="اكتب سبب الإلغاء هنا..."
+              rows={3}
+              style={{...inp,direction:"rtl",textAlign:"right",minHeight:70,marginBottom:14,borderColor:cancelReason?"#f8717144":"#2a2a4a"}}
+            />
+
+            {/* Preview message */}
+            {cancelReason&&(
+              <div style={{background:"#0d0d1a",borderRadius:10,padding:"10px 12px",marginBottom:14,borderRight:"3px solid #f87171"}}>
+                <div style={{fontSize:10,color:"#f87171",fontWeight:700,marginBottom:6}}>معاينة الرسالة للعميل:</div>
+                <div style={{fontSize:11,color:"#8b8ba3",lineHeight:1.6,whiteSpace:"pre-line"}}>
+                  ❌ إلغاء حجز #{cancelModal.id}{"\n"}مرحباً {cancelModal.customer_name},{"\n"}📌 السبب: {cancelReason}{"\n"}يمكنك إعادة الحجز 🙏
+                </div>
+              </div>
+            )}
+
+            {/* Actions */}
+            <div style={{display:"flex",gap:10}}>
+              <button className="bt" onClick={()=>{setCancelModal(null);setCancelReason("");}} style={{flex:1,padding:13,borderRadius:12,border:"1px solid #2a2a4a",background:"transparent",color:"#8b8ba3",fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif"}}>تراجع</button>
+              <button className="bt" disabled={!cancelReason.trim()||sending} onClick={confirmCancel} style={{flex:1,padding:13,borderRadius:12,border:"none",background:!cancelReason.trim()?"#2a2a4a":"linear-gradient(135deg,#ef4444,#dc2626)",color:"#fff",fontSize:14,fontWeight:700,cursor:(!cancelReason.trim()||sending)?"default":"pointer",fontFamily:"'Tajawal',sans-serif",opacity:(!cancelReason.trim()||sending)?0.5:1}}>
+                {sending?"⏳ جاري...":"❌ تأكيد الإلغاء"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ═══ Redeem Confirmation Modal ═══ */}
+      {redeemModal&&(
+        <div onClick={()=>setRedeemModal(null)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.8)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:160,backdropFilter:"blur(6px)"}}>
+          <div onClick={e=>e.stopPropagation()} style={{background:"#131328",borderRadius:20,padding:"24px 20px",width:"92%",maxWidth:400,animation:"fadeUp 0.3s ease",border:"1px solid #c0a06233"}}>
+            <div style={{textAlign:"center",marginBottom:18}}>
+              <div style={{width:60,height:60,borderRadius:16,background:"#c0a06215",margin:"0 auto 12px",display:"flex",alignItems:"center",justifyContent:"center",fontSize:32}}>{redeemModal.reward.icon}</div>
+              <h3 style={{fontSize:18,fontWeight:800,color:"#fff",margin:"0 0 6px"}}>تأكيد الاستبدال</h3>
+              <p style={{fontSize:13,color:"#8b8ba3",margin:0}}>العميل: <span style={{color:"#c0a062",fontWeight:700}}>{redeemModal.customer.name}</span></p>
+            </div>
+
+            <div style={{background:"#1a1a30",borderRadius:12,padding:14,marginBottom:16}}>
+              <div style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:"1px solid #2a2a4a"}}>
+                <span style={{fontSize:12,color:"#8b8ba3"}}>🎁 المكافأة</span>
+                <span style={{fontSize:13,fontWeight:700,color:"#fff"}}>{redeemModal.reward.name}</span>
+              </div>
+              <div style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:"1px solid #2a2a4a"}}>
+                <span style={{fontSize:12,color:"#8b8ba3"}}>⭐ النقاط المطلوبة</span>
+                <span style={{fontSize:13,fontWeight:700,color:"#f87171"}}>{redeemModal.reward.points} نقطة</span>
+              </div>
+              <div style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:"1px solid #2a2a4a"}}>
+                <span style={{fontSize:12,color:"#8b8ba3"}}>💰 قيمة الخصم</span>
+                <span style={{fontSize:13,fontWeight:700,color:"#34d399"}}>{redeemModal.reward.discount} ر.س</span>
+              </div>
+              <div style={{display:"flex",justifyContent:"space-between",padding:"8px 0"}}>
+                <span style={{fontSize:12,color:"#8b8ba3"}}>📊 الرصيد بعد الاستبدال</span>
+                <span style={{fontSize:13,fontWeight:700,color:"#c0a062"}}>{getAvailablePoints(redeemModal.customer) - redeemModal.reward.points} نقطة</span>
+              </div>
+            </div>
+
+            {waOk && (
+              <div style={{background:"#25d36611",borderRadius:10,padding:"8px 12px",marginBottom:14,fontSize:11,color:"#34d399",textAlign:"center"}}>
+                💬 سيتم إرسال إشعار واتساب للعميل بتفاصيل المكافأة
+              </div>
+            )}
+
+            <div style={{display:"flex",gap:10}}>
+              <button className="bt" onClick={()=>setRedeemModal(null)} style={{flex:1,padding:13,borderRadius:12,border:"1px solid #2a2a4a",background:"transparent",color:"#8b8ba3",fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif"}}>إلغاء</button>
+              <button className="bt" onClick={confirmRedeem} style={{flex:1,padding:13,borderRadius:12,border:"none",background:"linear-gradient(135deg,#c0a062,#8b6914)",color:"#fff",fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif"}}>
+                🎁 تأكيد الاستبدال
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(App));
+</script>
 </body>
 </html>
