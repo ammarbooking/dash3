@@ -340,32 +340,37 @@ function App() {
     return data;
   };
 
-  // ═══ WhatsBot.at Send ═══
-  const sendWA = async (bk, type, reason) => {
-    const phone = fmtPh(bk?.customer_phone);
-    const message = String(
-      type === "cancellation" ? MSG[type](bk, reason) : MSG[type](bk)
-    ).trim();
+const WA_FUNCTION_URL = "https://vmbaxqghabxzvkcxwjdy.supabase.co/functions/v1/send-wa";
+const WA_API_KEY = "sb_publishable_5maKs94zmK6Iu5TbpiHkWw_SM0Ew2Y2";
 
-    if (!supaUrl?.trim() || !supaKey?.trim()) {
-      setToast({ msg: "❌ بيانات Supabase غير موجودة", type: "error" });
-      return false;
-    }
-    if (!phone) {
-      setToast({ msg: "❌ رقم العميل غير صحيح أو فارغ", type: "error" });
-      return false;
-    }
-    if (!message) {
-      setToast({ msg: "❌ نص الرسالة فارغ", type: "error" });
-      return false;
-    }
+const sendViaSupabase = async (phone, message) => {
+  const res = await fetch(WA_FUNCTION_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "apikey": WA_API_KEY
+    },
+    body: JSON.stringify({
+      phone: String(phone || "").trim(),
+      message: String(message || "").trim()
+    })
+  });
 
-    setSending(true);
-    try {
-      await postWhatsBot({
-        number: phone,
-        message
-      });
+  const text = await res.text();
+
+  let data = {};
+  try {
+    data = JSON.parse(text);
+  } catch {
+    data = { raw: text };
+  }
+
+  if (!res.ok || data?.ok === false) {
+    throw new Error(data?.error || data?.response || `HTTP ${res.status}`);
+  }
+
+  return data;
+};
 
       setToast({
         msg: `✅ تم إرسال ${type === "confirmation" ? "تأكيد" : type === "reminder" ? "تذكير" : "إلغاء"} لـ ${bk.customer_name}`,
