@@ -2,9 +2,9 @@
 <html lang="ar" dir="rtl">
 <head>
 <meta charset="UTF-8">
-<title>لوحة حجز + واتساب</title>
+<title>لوحة واتساب</title>
 <style>
-body{font-family:Arial;background:#0f172a;color:#fff;padding:20px}
+body{font-family:Arial;background:#111;color:#fff;padding:20px}
 input,button{padding:10px;margin:5px;border-radius:8px;border:none}
 button{background:#25d366;color:#fff;cursor:pointer}
 </style>
@@ -16,10 +16,10 @@ button{background:#25d366;color:#fff;cursor:pointer}
 <input id="inst" placeholder="Instance ID">
 <button onclick="save()">💾 حفظ</button>
 
-<h2>📋 تأكيد حجز</h2>
+<h2>📩 إرسال رسالة</h2>
 <input id="name" placeholder="اسم العميل">
 <input id="phone" placeholder="رقم العميل">
-<button onclick="confirmBooking()">✅ تأكيد وإرسال واتساب</button>
+<button onclick="send()">🚀 إرسال</button>
 
 <script>
 let waToken = localStorage.getItem("waToken") || "";
@@ -46,14 +46,7 @@ function formatPhone(p){
   return c;
 }
 
-function sendWA(name, phone){
-  let p = formatPhone(phone);
-  const msg = encodeURIComponent("✅ تم تأكيد حجزك يا " + name);
-  const url = `https://whatsbot.at/api/send_pedido?access_token=${waToken}&instance_id=${waInst}&number=${p}&message=${msg}`;
-  window.open(url, "_blank");
-}
-
-function confirmBooking(){
+function send(){
   const name = document.getElementById("name").value;
   const phone = document.getElementById("phone").value;
 
@@ -62,7 +55,12 @@ function confirmBooking(){
     return;
   }
 
-  sendWA(name, phone);
+  let p = formatPhone(phone);
+  const msg = encodeURIComponent("✅ تم تأكيد حجزك يا " + name);
+
+  const url = `https://whatsbot.at/api/send_pedido?access_token=${waToken}&instance_id=${waInst}&number=${p}&message=${msg}`;
+
+  window.open(url, "_blank");
 }
 </script>
 
