@@ -73,7 +73,7 @@ const Toast = ({msg,type,onClose})=>{useEffect(()=>{const t=setTimeout(onClose,4
 const Toggle = ({value,onChange,label})=>(<div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"14px 0",borderBottom:"1px solid #1a1a30"}}><span style={{fontSize:14,color:"#e0e0f0"}}>{label}</span><div onClick={onChange} style={{width:48,height:26,borderRadius:13,cursor:"pointer",background:value?"#34d399":"#2a2a4a",transition:"all 0.3s",position:"relative"}}><div style={{width:20,height:20,borderRadius:"50%",background:"#fff",position:"absolute",top:3,right:value?3:"auto",left:value?"auto":3,transition:"all 0.3s"}}/></div></div>);
 
 function App() {
-  const [bookings,setBookings] = useState(DEMO);
+  const [bookings,setBookings] = useState([]);
   const [tab,setTab] = useState("home");
   const [sub,setSub] = useState(null);
   const [sel,setSel] = useState(null);
@@ -87,10 +87,10 @@ function App() {
   const [loading,setLoading] = useState(false);
 
   // Config
-  const [supaUrl,setSupaUrl] = useState("");
-  const [supaKey,setSupaKey] = useState("");
+  const [supaUrl,setSupaUrl] = useState(localStorage.getItem("supaUrl") || "");
+  const [supaKey,setSupaKey] = useState(localStorage.getItem("supaKey") || "");
   const [waToken] = useState("669c3f9310ef5");
-  const [waInst,setWaInst] = useState("669D7FC419A08");
+  const [waInst,setWaInst] = useState(localStorage.getItem("waInst") || "669D7FC419A08");
   const [autoConf,setAutoConf] = useState(true);
   const [autoCanc,setAutoCanc] = useState(true);
   const [autoRem,setAutoRem] = useState(true);
@@ -110,7 +110,9 @@ function App() {
 
   // Redemption system
   const [redeemModal,setRedeemModal] = useState(null); // {customer, reward}
-  const [redemptions,setRedemptions] = useState({}); // phone -> [{rewardId, date, points}]
+  const [redemptions,setRedemptions] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("redemptions") || "{}"); } catch { return {}; }
+  }); // phone -> [{rewardId, date, points}]
 
   const getRedeemedPoints = (phone) => (redemptions[phone] || []).reduce((s, r) => s + r.points, 0);
   const getAvailablePoints = (customer) => customer.points - getRedeemedPoints(customer.phone);
@@ -146,24 +148,38 @@ function App() {
     setRedeemModal(null);
   };
 
-  const dbOk = supaUrl && supaKey;
-  const waOk = waToken && waInst;
+  const dbOk = Boolean(supaUrl && supaKey);
+  const waOk = Boolean(waToken && waInst);
   const db = dbOk ? supa(supaUrl, supaKey) : null;
   const today = new Date().toISOString().split("T")[0];
   const perPage = 10;
 
+  useEffect(() => { localStorage.setItem("supaUrl", supaUrl); }, [supaUrl]);
+  useEffect(() => { localStorage.setItem("supaKey", supaKey); }, [supaKey]);
+  useEffect(() => { localStorage.setItem("waInst", waInst); }, [waInst]);
+  useEffect(() => { localStorage.setItem("redemptions", JSON.stringify(redemptions)); }, [redemptions]);
+
   // ═══ Load bookings from Supabase ═══
   const loadBookings = useCallback(async()=>{
-    if(!db) return;
+    if(!db) {
+      setBookings([]);
+      return;
+    }
     setLoading(true);
     try{
       const data = await db.get("bookings","&order=booking_date.desc,booking_time.desc");
-      if(data.length) setBookings(data);
-    }catch(e){setToast({msg:`خطأ تحميل: ${e.message}`,type:"error"});}
+      setBookings(Array.isArray(data) ? data : []);
+    }catch(e){
+      setToast({msg:`خطأ تحميل: ${e.message}`,type:"error"});
+      setBookings([]);
+    }
     finally{setLoading(false);}
-  },[supaUrl,supaKey]);
+  },[db]);
 
-  useEffect(()=>{if(dbOk)loadBookings();},[dbOk,loadBookings]);
+  useEffect(()=>{
+    if(dbOk) loadBookings();
+    else setBookings([]);
+  },[dbOk,loadBookings]);
 
   // Auto-refresh every 30s
   useEffect(()=>{if(!dbOk)return;const i=setInterval(loadBookings,30000);return()=>clearInterval(i);},[dbOk,loadBookings]);
@@ -284,8 +300,10 @@ function App() {
       setCancelReason("");
       return;
     }
-    if(db) await db.update("bookings",bk.id,{status:ns});
-    setBookings(p=>p.map(b=>b.id===bk.id?{...b,status:ns}:b));
+    if(!db){setToast({msg:"اربط قاعدة البيانات أولاً",type:"error"});return;}
+    const ok = await db.update("bookings",bk.id,{status:ns});
+    if(!ok){setToast({msg:"فشل تحديث الحجز في قاعدة البيانات",type:"error"});return;}
+    await loadBookings();
     const up={...bk,status:ns};
     if(ns==="confirmed"&&autoConf&&waOk) await sendWA(up,"confirmation");
     setSel(up);
@@ -298,9 +316,11 @@ function App() {
     const reason = cancelReason.trim();
     if(!reason){setToast({msg:"يرجى إدخال سبب الإلغاء",type:"error"});return;}
 
-    if(db) await db.update("bookings",bk.id,{status:"cancelled"});
-    setBookings(p=>p.map(b=>b.id===bk.id?{...b,status:"cancelled",cancel_reason:reason}:b));
-    const up={...bk,status:"cancelled"};
+    if(!db){setToast({msg:"اربط قاعدة البيانات أولاً",type:"error"});return;}
+    const ok = await db.update("bookings",bk.id,{status:"cancelled",cancel_reason:reason});
+    if(!ok){setToast({msg:"فشل حفظ الإلغاء في قاعدة البيانات",type:"error"});return;}
+    await loadBookings();
+    const up={...bk,status:"cancelled",cancel_reason:reason};
 
     if(autoCanc&&waOk) await sendWA(up,"cancellation",reason);
 
@@ -606,7 +626,8 @@ function App() {
           </div>
           {showDb&&(<div style={{marginTop:14,paddingTop:14,borderTop:"1px solid #1a1a30"}}>
             <div style={{marginBottom:10}}><label style={{fontSize:11,color:"#8b8ba3",marginBottom:4,display:"block"}}>Project URL</label><input placeholder="https://xxxxx.supabase.co" value={supaUrl} onChange={e=>setSupaUrl(e.target.value.trim())} style={{...inp,direction:"ltr",textAlign:"left"}}/></div>
-            <div style={{marginBottom:10}}><label style={{fontSize:11,color:"#8b8ba3",marginBottom:4,display:"block"}}>Anon Key</label><input placeholder="eyJ..." value={supaKey} onChange={e=>setSupaKey(e.target.value.trim())} style={{...inp,direction:"ltr",textAlign:"left",fontSize:12}}/></div>
+            <div style={{marginBottom:10}}><label style={{fontSize:11,color:"#8b8ba3",marginBottom:4,display:"block"}}>Anon / Publishable Key</label><input placeholder="eyJ..." value={supaKey} onChange={e=>setSupaKey(e.target.value.trim())} style={{...inp,direction:"ltr",textAlign:"left",fontSize:12}}/></div>
+            <div style={{fontSize:11,color:"#8b8ba3",background:"#1a1a30",padding:"8px 10px",borderRadius:8,marginBottom:10}}>اللوحة الآن تعرض فقط البيانات القادمة من قاعدة البيانات. لو قاعدة البيانات فارغة سيظهر لك 0 حجوزات بدل بيانات تجريبية.</div>
             <button className="bt" onClick={async()=>{if(!supaUrl||!supaKey)return;setLoading(true);try{const d=await supa(supaUrl,supaKey).get("bookings","&limit=1");setToast({msg:d?"✅ متصل بنجاح!":"فشل",type:d?"success":"error"});}catch(e){setToast({msg:`خطأ: ${e.message}`,type:"error"});}finally{setLoading(false);}}} style={{width:"100%",padding:11,borderRadius:10,border:"none",background:"linear-gradient(135deg,#4285f4,#2563eb)",color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif"}}>🧪 تجربة الاتصال</button>
           </div>)}
         </div>
