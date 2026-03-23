@@ -149,11 +149,12 @@ function App() {
     if (waOk) {
       const available = getAvailablePoints(customer) - reward.points;
       try {
-        await fetch("https://whatsbot.at/api/send_pedido", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
-          number: fmtPh(customer.phone), type: "text",
+        await postWhatsBot({
+          number: fmtPh(customer.phone),
           message: `🎁 مكافأة ولاء - إبداع عمار\n\nمرحباً ${customer.name}،\nتم استبدال نقاطك بنجاح!\n\n🏆 المكافأة: ${reward.name}\n⭐ النقاط المستخدمة: ${reward.points}\n📊 رصيدك المتبقي: ${available} نقطة\n\nأبرز الكوبون عند زيارتك القادمة.\nشكراً لولائك! 💈`,
-          instance_id: waInst, access_token: waToken
-        })});
+          token: waToken,
+          inst: waInst
+        });
         setToast({msg:`تم استبدال ${reward.points} نقطة وإشعار ${customer.name} ✓`,type:"success"});
       } catch { setToast({msg:"تم الاستبدال (فشل إرسال الإشعار)",type:"info"}); }
     } else {
@@ -194,7 +195,6 @@ function App() {
       const now = new Date();
       const todayStr = now.toISOString().split("T")[0];
 
-      // Find confirmed bookings for today that need reminders
       const todayConfirmed = bookings.filter(b =>
         b.booking_date === todayStr &&
         b.status === "confirmed" &&
@@ -204,31 +204,31 @@ function App() {
       let closestReminder = null;
 
       for (const bk of todayConfirmed) {
-        const [h, m] = bk.booking_time.split(":");
-        let hour = parseInt(h);
-        if (hour < 8) hour += 12; // PM times
-        const apptTime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hour, parseInt(m));
+        const parsed = parseBookingTime(bk.booking_time);
+        if (!parsed) continue;
+
+        const apptTime = new Date(
+          now.getFullYear(),
+          now.getMonth(),
+          now.getDate(),
+          parsed.hour,
+          parsed.minute
+        );
+
         const reminderTime = new Date(apptTime.getTime() - remMinutes * 60000);
         const diff = reminderTime.getTime() - now.getTime();
 
-        // Track closest upcoming reminder
         if (diff > 0 && (!closestReminder || diff < closestReminder.diff)) {
           closestReminder = { booking: bk, diff, time: bk.booking_time };
         }
 
-        // Send reminder if within 1 minute window of the reminder time
         if (diff <= 0 && diff > -60000) {
           try {
-            await fetch("https://whatsbot.at/api/send_pedido", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                number: fmtPh(bk.customer_phone),
-                type: "text",
-                message: MSG.reminder(bk),
-                instance_id: waInst,
-                access_token: waToken,
-              }),
+            await postWhatsBot({
+              number: fmtPh(bk.customer_phone),
+              message: MSG.reminder(bk),
+              token: waToken,
+              inst: waInst
             });
             setReminded(prev => new Set([...prev, bk.id]));
             setBookings(prev => prev.map(b => b.id === bk.id ? { ...b, reminded: true } : b));
@@ -275,14 +275,81 @@ function App() {
   const wk = Array.from({length:7},(_,i)=>{const d=new Date();d.setDate(d.getDate()-(6-i));const ds=d.toISOString().split("T")[0];return{day:["أحد","اثنين","ثلاثاء","أربعاء","خميس","جمعة","سبت"][d.getDay()],c:bookings.filter(b=>b.booking_date===ds&&b.status==="confirmed").length,t:ds===today};});
   const mxW=Math.max(...wk.map(d=>d.c),1);
 
-  const fmtPh = (p) => { let c = String(p || "").replace(/\D/g, ""); if (!c) return ""; if (c.startsWith("00")) c = c.slice(2); if (c.startsWith("966")) return c; if (c.startsWith("05")) return "966" + c.slice(1); if (c.startsWith("5") && c.length === 9) return "966" + c; return c; };
+  const fmtPh = (p) => {
+    let c = String(p || "").replace(/\D/g, "").trim();
+    if (!c) return "";
+    if (c.startsWith("00")) c = c.slice(2);
+    if (c.startsWith("966")) return c;
+    if (c.startsWith("05") && c.length === 10) return "966" + c.slice(1);
+    if (c.startsWith("5") && c.length === 9) return "966" + c;
+    return "";
+  };
+
+  const parseBookingTime = (timeStr) => {
+    const raw = String(timeStr || "").trim();
+    if (!raw) return null;
+
+    const m = raw.match(/(\d{1,2})\s*:\s*(\d{2})\s*(ص|م)?/);
+    if (!m) return null;
+
+    let hour = parseInt(m[1], 10);
+    const minute = parseInt(m[2], 10);
+    const meridiem = m[3] || "";
+
+    if (meridiem === "م" && hour < 12) hour += 12;
+    if (meridiem === "ص" && hour === 12) hour = 0;
+
+    if (!meridiem && hour < 8) hour += 12;
+
+    return { hour, minute };
+  };
+
+  const postWhatsBot = async ({ number, message, token, inst }) => {
+    const form = new FormData();
+    form.append("number", String(number || "").trim());
+    form.append("type", "text");
+    form.append("message", String(message || "").trim());
+    form.append("instance_id", String(inst || "").trim());
+    form.append("access_token", String(token || "").trim());
+
+    console.log("WHATSBOT PAYLOAD", {
+      number: String(number || "").trim(),
+      type: "text",
+      message: String(message || "").trim(),
+      instance_id: String(inst || "").trim(),
+      access_token: String(token || "").trim()
+    });
+
+    const res = await fetch("https://whatsbot.at/api/send_pedido", {
+      method: "POST",
+      body: form
+    });
+
+    const text = await res.text();
+    console.log("WHATSBOT RESPONSE", text);
+
+    let data = {};
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = { raw: text };
+    }
+
+    if (!res.ok || data?.status === "error" || data?.success === false || data?.http_code >= 400) {
+      throw new Error(data?.message || `HTTP ${res.status} - ${text}`);
+    }
+
+    return data;
+  };
 
   // ═══ WhatsBot.at Send ═══
   const sendWA = async (bk, type, reason) => {
     const token = String(waToken || "").trim();
     const inst = String(waInst || "").trim();
     const phone = fmtPh(bk?.customer_phone);
-    const message = type === "cancellation" ? MSG[type](bk, reason) : MSG[type](bk);
+    const message = String(
+      type === "cancellation" ? MSG[type](bk, reason) : MSG[type](bk)
+    ).trim();
 
     if (!token) {
       setToast({ msg: "❌ Access Token غير موجود", type: "error" });
@@ -296,60 +363,26 @@ function App() {
       setToast({ msg: "❌ رقم العميل غير صحيح أو فارغ", type: "error" });
       return false;
     }
-    if (!message || !String(message).trim()) {
+    if (!message) {
       setToast({ msg: "❌ نص الرسالة فارغ", type: "error" });
       return false;
     }
 
     setSending(true);
     try {
-      const body = new URLSearchParams();
-      body.append("number", phone);
-      body.append("type", "text");
-      body.append("message", message);
-      body.append("instance_id", inst);
-      body.append("access_token", token);
-
-      console.log("WA BODY:", {
+      await postWhatsBot({
         number: phone,
-        type: "text",
         message,
-        instance_id: inst,
-        access_token: token,
+        token,
+        inst
       });
-
-      const res = await fetch("https://whatsbot.at/api/send_pedido", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
-        },
-        body: body.toString(),
-      });
-
-      const text = await res.text();
-      console.log("WA RESPONSE:", text);
-
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status} - ${text}`);
-      }
-
-      let data = {};
-      try {
-        data = JSON.parse(text);
-      } catch {
-        data = { raw: text };
-      }
-
-      if (data?.status === "error" || data?.success === false || data?.http_code >= 400) {
-        throw new Error(data?.message || "فشل إرسال الرسالة");
-      }
 
       setToast({
         msg: `✅ تم إرسال ${type === "confirmation" ? "تأكيد" : type === "reminder" ? "تذكير" : "إلغاء"} لـ ${bk.customer_name}`,
         type: "success",
       });
 
-      if (db) {
+      if (db && bk?.id) {
         try {
           await db.update("bookings", bk.id, { notified: true });
         } catch (e) {
@@ -357,7 +390,12 @@ function App() {
         }
       }
 
-      setBookings((prev) => prev.map((b) => (b.id === bk.id ? { ...b, notified: true } : b)));
+      if (bk?.id) {
+        setBookings(prev =>
+          prev.map(b => (b.id === bk.id ? { ...b, notified: true } : b))
+        );
+      }
+
       return true;
     } catch (e) {
       console.error("WA SEND ERROR:", e);
@@ -427,18 +465,45 @@ function App() {
   };
 
   // ═══ Bulk Send ═══
-  const sendBulk = async()=>{
-    if(!waOk||!bulkMsg.trim())return;
-    const tg=bulkTarget==="all"?customers:customers.filter(c=>c.branch===(bulkTarget==="riyadh"?"الرياض":"الدمام"));
-    setBulkProg({s:0,t:tg.length,on:true});
-    let s=0;
-    for(const c of tg){
-      try{await fetch("https://whatsbot.at/api/send_pedido",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({number:fmtPh(c.phone),type:"text",message:`💈 إبداع عمار\n\nمرحباً ${c.name}،\n${bulkMsg}`,instance_id:waInst,access_token:waToken})});s++;}catch{}
-      setBulkProg({s,t:tg.length,on:true});
-      await new Promise(r=>setTimeout(r,1500));
+  const sendBulk = async()=> {
+    if (!waOk || !bulkMsg.trim()) return;
+
+    const token = String(waToken || "").trim();
+    const inst = String(waInst || "").trim();
+
+    const tg =
+      bulkTarget === "all"
+        ? customers
+        : customers.filter(c => c.branch === (bulkTarget === "riyadh" ? "الرياض" : "الدمام"));
+
+    setBulkProg({ s: 0, t: tg.length, on: true });
+
+    let s = 0;
+
+    for (const c of tg) {
+      try {
+        const phone = fmtPh(c.phone);
+        const message = `💈 إبداع عمار\n\nمرحباً ${c.name}،\n${bulkMsg}`.trim();
+
+        if (phone) {
+          await postWhatsBot({
+            number: phone,
+            message,
+            token,
+            inst
+          });
+          s++;
+        }
+      } catch (e) {
+        console.error("Bulk send error:", e);
+      }
+
+      setBulkProg({ s, t: tg.length, on: true });
+      await new Promise(r => setTimeout(r, 1500));
     }
-    setBulkProg({s,t:tg.length,on:false});
-    setToast({msg:`تم إرسال ${s}/${tg.length} رسالة ✓`,type:"success"});
+
+    setBulkProg({ s, t: tg.length, on: false });
+    setToast({ msg: `تم إرسال ${s}/${tg.length} رسالة ✓`, type: "success" });
   };
 
   const inp={width:"100%",padding:"12px 14px",background:"#1a1a30",border:"1px solid #2a2a4a",borderRadius:10,color:"#e0e0f0",fontSize:14,fontFamily:"'Tajawal',sans-serif",outline:"none"};
@@ -736,7 +801,7 @@ function App() {
           {showWa&&(<div style={{marginTop:14,paddingTop:14,borderTop:"1px solid #1a1a30"}}>
             <div style={{marginBottom:10}}><label style={{fontSize:"11px",color:"#8b8ba3",marginBottom:4,display:"block"}}>Access Token *</label><input placeholder="أدخل Access Token" value={waToken} onChange={e=>setWaToken(e.target.value.trim())} style={{...inp,direction:"ltr",textAlign:"left"}}/></div>
             <div style={{marginBottom:10}}><label style={{fontSize:11,color:"#8b8ba3",marginBottom:4,display:"block"}}>Instance ID *</label><input placeholder="609ACF283XXXX" value={waInst} onChange={e=>setWaInst(e.target.value.trim())} style={{...inp,direction:"ltr",textAlign:"left"}}/></div>
-            <button className="bt" disabled={!waInst || !waToken || sending} onClick={async()=>{const fakeBooking={id:999999,customer_name:"عميل تجريبي",customer_phone:"0551234567",service:"تركيب شعر",branch:"الرياض",booking_date:new Date().toISOString().split("T")[0],booking_time:"05:00",price:1700};await sendWA(fakeBooking,"confirmation");}} style={{width:"100%",padding:11,borderRadius:10,border:"none",background:"#25d366",color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif",opacity:(waInst&&waToken)?1:0.5}}>🧪 تجربة</button>
+            <button className="bt" disabled={!waInst || !waToken || sending} onClick={async()=>{const fakeBooking={id:999999,customer_name:"عميل تجريبي",customer_phone:"966551234567",service:"تركيب شعر",branch:"الرياض",booking_date:new Date().toISOString().split("T")[0],booking_time:"5:00 م",price:1700};await sendWA(fakeBooking,"confirmation");}} style={{width:"100%",padding:11,borderRadius:10,border:"none",background:"#25d366",color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif",opacity:(waInst&&waToken)?1:0.5}}>🧪 تجربة</button>
           </div>)}
         </div>
 
