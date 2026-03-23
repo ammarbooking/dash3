@@ -312,8 +312,7 @@ function App() {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        apikey: anonKey,
-        Authorization: `Bearer ${anonKey}`
+        apikey: anonKey
       },
       body: JSON.stringify({
         phone: String(number || "").trim(),
@@ -770,7 +769,7 @@ function App() {
           </div>
           {showDb&&(<div style={{marginTop:14,paddingTop:14,borderTop:"1px solid #1a1a30"}}>
             <div style={{marginBottom:10}}><label style={{fontSize:11,color:"#8b8ba3",marginBottom:4,display:"block"}}>Project URL</label><input placeholder="https://xxxxx.supabase.co" value={supaUrl} onChange={e=>setSupaUrl(e.target.value.trim())} style={{...inp,direction:"ltr",textAlign:"left"}}/></div>
-            <div style={{marginBottom:10}}><label style={{fontSize:11,color:"#8b8ba3",marginBottom:4,display:"block"}}>Anon Key</label><input placeholder="eyJ..." value={supaKey} onChange={e=>setSupaKey(e.target.value.trim())} style={{...inp,direction:"ltr",textAlign:"left",fontSize:12}}/></div>
+            <div style={{marginBottom:10}}><label style={{fontSize:11,color:"#8b8ba3",marginBottom:4,display:"block"}}>Publishable Key</label><input placeholder="sb_publishable_..." value={supaKey} onChange={e=>setSupaKey(e.target.value.trim())} style={{...inp,direction:"ltr",textAlign:"left",fontSize:12}}/></div>
             <button className="bt" onClick={async()=>{if(!supaUrl||!supaKey)return;setLoading(true);try{const d=await supa(supaUrl,supaKey).get("bookings","&limit=1");setToast({msg:d?"✅ متصل بنجاح!":"فشل",type:d?"success":"error"});}catch(e){setToast({msg:`خطأ: ${e.message}`,type:"error"});}finally{setLoading(false);}}} style={{width:"100%",padding:11,borderRadius:10,border:"none",background:"linear-gradient(135deg,#4285f4,#2563eb)",color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif"}}>🧪 تجربة الاتصال</button>
           </div>)}
         </div>
