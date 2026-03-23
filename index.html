@@ -164,7 +164,7 @@ function App() {
   };
 
   const dbOk = Boolean(supaUrl?.trim() && supaKey?.trim());
-  const waOk = Boolean(waToken?.trim() && waInst?.trim());
+  const waOk = Boolean(supaUrl?.trim() && supaKey?.trim());
   const db = dbOk ? supa(supaUrl, supaKey) : null;
   const today = new Date().toISOString().split("T")[0];
   const perPage = 10;
@@ -226,9 +226,7 @@ function App() {
           try {
             await postWhatsBot({
               number: fmtPh(bk.customer_phone),
-              message: MSG.reminder(bk),
-              token: waToken,
-              inst: waInst
+              message: MSG.reminder(bk)
             });
             setReminded(prev => new Set([...prev, bk.id]));
             setBookings(prev => prev.map(b => b.id === bk.id ? { ...b, reminded: true } : b));
@@ -304,29 +302,29 @@ function App() {
     return { hour, minute };
   };
 
-  const postWhatsBot = async ({ number, message, token, inst }) => {
-    const form = new FormData();
-    form.append("number", String(number || "").trim());
-    form.append("type", "text");
-    form.append("message", String(message || "").trim());
-    form.append("instance_id", String(inst || "").trim());
-    form.append("access_token", String(token || "").trim());
+  const postWhatsBot = async ({ number, message }) => {
+    const baseUrl = String(supaUrl || "").trim().replace(/\/$/, "");
+    const anonKey = String(supaKey || "").trim();
 
-    console.log("WHATSBOT PAYLOAD", {
-      number: String(number || "").trim(),
-      type: "text",
-      message: String(message || "").trim(),
-      instance_id: String(inst || "").trim(),
-      access_token: String(token || "").trim()
-    });
+    if (!baseUrl || !anonKey) {
+      throw new Error("بيانات Supabase غير مكتملة");
+    }
 
-    const res = await fetch("https://whatsbot.at/api/send_pedido", {
+    const res = await fetch(`${baseUrl}/functions/v1/send-wa`, {
       method: "POST",
-      body: form
+      headers: {
+        "Content-Type": "application/json",
+        apikey: anonKey,
+        Authorization: `Bearer ${anonKey}`
+      },
+      body: JSON.stringify({
+        phone: String(number || "").trim(),
+        message: String(message || "").trim()
+      })
     });
 
     const text = await res.text();
-    console.log("WHATSBOT RESPONSE", text);
+    console.log("SUPABASE WA RESPONSE", text);
 
     let data = {};
     try {
@@ -335,8 +333,8 @@ function App() {
       data = { raw: text };
     }
 
-    if (!res.ok || data?.status === "error" || data?.success === false || data?.http_code >= 400) {
-      throw new Error(data?.message || `HTTP ${res.status} - ${text}`);
+    if (!res.ok || data?.ok === false) {
+      throw new Error(data?.error || data?.response || `HTTP ${res.status} - ${text}`);
     }
 
     return data;
@@ -344,19 +342,13 @@ function App() {
 
   // ═══ WhatsBot.at Send ═══
   const sendWA = async (bk, type, reason) => {
-    const token = String(waToken || "").trim();
-    const inst = String(waInst || "").trim();
     const phone = fmtPh(bk?.customer_phone);
     const message = String(
       type === "cancellation" ? MSG[type](bk, reason) : MSG[type](bk)
     ).trim();
 
-    if (!token) {
-      setToast({ msg: "❌ Access Token غير موجود", type: "error" });
-      return false;
-    }
-    if (!inst) {
-      setToast({ msg: "❌ Instance ID غير موجود", type: "error" });
+    if (!supaUrl?.trim() || !supaKey?.trim()) {
+      setToast({ msg: "❌ بيانات Supabase غير موجودة", type: "error" });
       return false;
     }
     if (!phone) {
@@ -372,9 +364,7 @@ function App() {
     try {
       await postWhatsBot({
         number: phone,
-        message,
-        token,
-        inst
+        message
       });
 
       setToast({
@@ -468,9 +458,6 @@ function App() {
   const sendBulk = async()=> {
     if (!waOk || !bulkMsg.trim()) return;
 
-    const token = String(waToken || "").trim();
-    const inst = String(waInst || "").trim();
-
     const tg =
       bulkTarget === "all"
         ? customers
@@ -488,9 +475,7 @@ function App() {
         if (phone) {
           await postWhatsBot({
             number: phone,
-            message,
-            token,
-            inst
+            message
           });
           s++;
         }
@@ -795,13 +780,12 @@ function App() {
         {/* WhatsBot */}
         <div style={{background:"#131328",borderRadius:14,padding:16,marginBottom:10}}>
           <div onClick={()=>setShowWa(!showWa)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer"}}>
-            <div style={{display:"flex",alignItems:"center",gap:10}}><div style={{width:38,height:38,borderRadius:10,background:"#25d36622",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18}}>💬</div><div><div style={{fontSize:13,fontWeight:700,color:"#fff"}}>WhatsBot.at</div><div style={{fontSize:11,color:waOk?"#34d399":"#666680"}}>{waOk?"✅ البيانات محفوظة":"أدخل بيانات WhatsBot"}</div></div></div>
+            <div style={{display:"flex",alignItems:"center",gap:10}}><div style={{width:38,height:38,borderRadius:10,background:"#25d36622",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18}}>💬</div><div><div style={{fontSize:13,fontWeight:700,color:"#fff"}}>WhatsBot.at</div><div style={{fontSize:11,color:waOk?"#34d399":"#666680"}}>{waOk?"✅ الربط جاهز":"أدخل بيانات Supabase فقط"}</div></div></div>
             <span style={{color:"#555578",transform:showWa?"rotate(90deg)":"none",transition:"0.2s"}}>←</span>
           </div>
           {showWa&&(<div style={{marginTop:14,paddingTop:14,borderTop:"1px solid #1a1a30"}}>
-            <div style={{marginBottom:10}}><label style={{fontSize:"11px",color:"#8b8ba3",marginBottom:4,display:"block"}}>Access Token *</label><input placeholder="أدخل Access Token" value={waToken} onChange={e=>setWaToken(e.target.value.trim())} style={{...inp,direction:"ltr",textAlign:"left"}}/></div>
-            <div style={{marginBottom:10}}><label style={{fontSize:11,color:"#8b8ba3",marginBottom:4,display:"block"}}>Instance ID *</label><input placeholder="609ACF283XXXX" value={waInst} onChange={e=>setWaInst(e.target.value.trim())} style={{...inp,direction:"ltr",textAlign:"left"}}/></div>
-            <button className="bt" disabled={!waInst || !waToken || sending} onClick={async()=>{const fakeBooking={id:999999,customer_name:"عميل تجريبي",customer_phone:"966551234567",service:"تركيب شعر",branch:"الرياض",booking_date:new Date().toISOString().split("T")[0],booking_time:"5:00 م",price:1700};await sendWA(fakeBooking,"confirmation");}} style={{width:"100%",padding:11,borderRadius:10,border:"none",background:"#25d366",color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif",opacity:(waInst&&waToken)?1:0.5}}>🧪 تجربة</button>
+            <div style={{marginBottom:10,padding:"12px 14px",background:"#142032",border:"1px solid #234",borderRadius:10,color:"#c7e7ff",fontSize:12,lineHeight:1.8}}>✅ الإرسال الأوتوماتيكي مربوط الآن عبر <b>Supabase Edge Function</b><br/>لا تحتاج إدخال Access Token أو Instance ID هنا بعد الآن.</div>
+            <button className="bt" disabled={!dbOk || sending} onClick={async()=>{const fakeBooking={id:999999,customer_name:"عميل تجريبي",customer_phone:"966551234567",service:"تركيب شعر",branch:"الرياض",booking_date:new Date().toISOString().split("T")[0],booking_time:"5:00 م",price:1700};await sendWA(fakeBooking,"confirmation");}} style={{width:"100%",padding:11,borderRadius:10,border:"none",background:"#25d366",color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif",opacity:dbOk?1:0.5}}>🧪 تجربة الإرسال</button>
           </div>)}
         </div>
 
