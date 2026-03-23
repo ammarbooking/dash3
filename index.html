@@ -21,7 +21,10 @@ const { useState, useEffect, useCallback } = React;
 
 // ═══ Supabase REST API Helper ═══
 const supa = (url, key) => ({
-  headers: { apikey: key, Authorization: `Bearer ${key}`, "Content-Type": "application/json", Prefer: "return=representation" },
+  headers: {
+    apikey: key,
+    "Content-Type": "application/json"
+  },, Prefer: "return=representation" },
   async get(table, query = "") { const r = await fetch(`${url}/rest/v1/${table}?select=*${query}`, { headers: this.headers }); return r.ok ? r.json() : []; },
   async insert(table, data) { const r = await fetch(`${url}/rest/v1/${table}`, { method: "POST", headers: this.headers, body: JSON.stringify(data) }); return r.ok ? r.json() : null; },
   async update(table, id, data) {
