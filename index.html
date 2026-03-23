@@ -279,50 +279,89 @@ function App() {
 
   // ═══ WhatsBot.at Send ═══
   const sendWA = async (bk, type, reason) => {
-    if (!waToken?.trim() || !waInst?.trim()) {
-      setToast({ msg: "أدخل Access Token و Instance ID أولاً", type: "error" });
+    const token = String(waToken || "").trim();
+    const inst = String(waInst || "").trim();
+    const phone = fmtPh(bk?.customer_phone);
+    const message = type === "cancellation" ? MSG[type](bk, reason) : MSG[type](bk);
+
+    if (!token) {
+      setToast({ msg: "❌ Access Token غير موجود", type: "error" });
       return false;
     }
-    if (!bk?.customer_phone || !String(bk.customer_phone).trim()) {
-      setToast({ msg: `رقم العميل غير موجود: ${bk?.customer_name || ""}`, type: "error" });
+    if (!inst) {
+      setToast({ msg: "❌ Instance ID غير موجود", type: "error" });
       return false;
     }
+    if (!phone) {
+      setToast({ msg: "❌ رقم العميل غير صحيح أو فارغ", type: "error" });
+      return false;
+    }
+    if (!message || !String(message).trim()) {
+      setToast({ msg: "❌ نص الرسالة فارغ", type: "error" });
+      return false;
+    }
+
     setSending(true);
     try {
-      const message = type === "cancellation" ? MSG[type](bk, reason) : MSG[type](bk);
-      const payload = {
-        number: fmtPh(String(bk.customer_phone)),
+      const body = new URLSearchParams();
+      body.append("number", phone);
+      body.append("type", "text");
+      body.append("message", message);
+      body.append("instance_id", inst);
+      body.append("access_token", token);
+
+      console.log("WA BODY:", {
+        number: phone,
         type: "text",
         message,
-        instance_id: waInst.trim(),
-        access_token: waToken.trim(),
-      };
-      const attemptJson = async () => fetch("https://whatsbot.at/api/send_pedido", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-      const attemptForm = async () => {
-        const form = new FormData();
-        Object.entries(payload).forEach(([k,v]) => form.append(k, v));
-        return fetch("https://whatsbot.at/api/send_pedido", { method: "POST", body: form });
-      };
-      let res = await attemptJson();
-      let txt = await res.text();
-      if (!res.ok && txt.includes("Missing required parameters")) {
-        res = await attemptForm();
-        txt = await res.text();
+        instance_id: inst,
+        access_token: token,
+      });
+
+      const res = await fetch("https://whatsbot.at/api/send_pedido", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+        },
+        body: body.toString(),
+      });
+
+      const text = await res.text();
+      console.log("WA RESPONSE:", text);
+
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status} - ${text}`);
       }
-      if (!res.ok) throw new Error(`HTTP ${res.status} - ${txt}`);
+
       let data = {};
-      try { data = JSON.parse(txt); } catch { data = { raw: txt }; }
-      if (data?.status === "error" || data?.success === false || data?.error) {
-        throw new Error(data?.message || data?.error || "فشل إرسال الرسالة");
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = { raw: text };
       }
+
+      if (data?.status === "error" || data?.success === false || data?.http_code >= 400) {
+        throw new Error(data?.message || "فشل إرسال الرسالة");
+      }
+
+      setToast({
+        msg: `✅ تم إرسال ${type === "confirmation" ? "تأكيد" : type === "reminder" ? "تذكير" : "إلغاء"} لـ ${bk.customer_name}`,
+        type: "success",
+      });
+
       if (db) {
-        try { await db.update("bookings", bk.id, { notified: true }); } catch {}
+        try {
+          await db.update("bookings", bk.id, { notified: true });
+        } catch (e) {
+          console.error("DB notified update failed:", e);
+        }
       }
-      setBookings(p => p.map(b => b.id === bk.id ? { ...b, notified: true } : b));
-      setToast({ msg: `تم إرسال ${type === "confirmation" ? "تأكيد" : type === "reminder" ? "تذكير" : "إلغاء"} لـ ${bk.customer_name} ✓`, type: "success" });
+
+      setBookings((prev) => prev.map((b) => (b.id === bk.id ? { ...b, notified: true } : b)));
       return true;
     } catch (e) {
-      setToast({ msg: `فشل الإرسال: ${e.message}`, type: "error" });
+      console.error("WA SEND ERROR:", e);
+      setToast({ msg: `❌ فشل الإرسال: ${e.message}`, type: "error" });
       return false;
     } finally {
       setSending(false);
@@ -697,7 +736,7 @@ function App() {
           {showWa&&(<div style={{marginTop:14,paddingTop:14,borderTop:"1px solid #1a1a30"}}>
             <div style={{marginBottom:10}}><label style={{fontSize:"11px",color:"#8b8ba3",marginBottom:4,display:"block"}}>Access Token *</label><input placeholder="أدخل Access Token" value={waToken} onChange={e=>setWaToken(e.target.value.trim())} style={{...inp,direction:"ltr",textAlign:"left"}}/></div>
             <div style={{marginBottom:10}}><label style={{fontSize:11,color:"#8b8ba3",marginBottom:4,display:"block"}}>Instance ID *</label><input placeholder="609ACF283XXXX" value={waInst} onChange={e=>setWaInst(e.target.value.trim())} style={{...inp,direction:"ltr",textAlign:"left"}}/></div>
-            <button className="bt" disabled={!waInst} onClick={async()=>{setSending(true);try{await fetch("https://whatsbot.at/api/send_pedido",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({number:"966566626652",type:"text",message:"✅ لوحة إبداع عمار متصلة!",instance_id:waInst,access_token:waToken})});setToast({msg:"تحقق الواتساب ✓",type:"success"});}catch(e){setToast({msg:e.message,type:"error"});}finally{setSending(false);}}} style={{width:"100%",padding:11,borderRadius:10,border:"none",background:"#25d366",color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif",opacity:waInst?1:0.5}}>🧪 تجربة</button>
+            <button className="bt" disabled={!waInst || !waToken || sending} onClick={async()=>{const fakeBooking={id:999999,customer_name:"عميل تجريبي",customer_phone:"0551234567",service:"تركيب شعر",branch:"الرياض",booking_date:new Date().toISOString().split("T")[0],booking_time:"05:00",price:1700};await sendWA(fakeBooking,"confirmation");}} style={{width:"100%",padding:11,borderRadius:10,border:"none",background:"#25d366",color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif",opacity:(waInst&&waToken)?1:0.5}}>🧪 تجربة</button>
           </div>)}
         </div>
 
