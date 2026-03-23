@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<title>تجربة واتساب</title>
+<style>
+body{font-family:Arial;background:#111;color:#fff;padding:20px}
+input,button{padding:10px;margin:5px;border-radius:8px;border:none;width:100%}
+button{background:#25d366;color:#fff}
+</style>
+</head>
+<body>
+
+<h2>إرسال واتساب</h2>
+
+<input id="token" placeholder="Access Token">
+<input id="inst" placeholder="Instance ID">
+<input id="name" placeholder="اسم العميل">
+<input id="phone" placeholder="رقم العميل">
+
+<button onclick="send()">إرسال</button>
+
+<pre id="result"></pre>
+
+<script>
+function formatPhone(p){
+  let c = p.replace(/\D/g,"");
+  if(!c.startsWith("966")){
+    c = "966" + c.replace(/^0/,"");
+  }
+  return c;
+}
+
+async function send(){
+  const token = document.getElementById("token").value;
+  const inst = document.getElementById("inst").value;
+  const name = document.getElementById("name").value;
+  const phone = document.getElementById("phone").value;
+
+  const res = await fetch("/api/send-whatsapp", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({
+      number: formatPhone(phone),
+      message: "تم تأكيد حجزك " + name,
+      instance_id: inst,
+      access_token: token
+    })
+  });
+
+  const text = await res.text();
+  document.getElementById("result").textContent = text;
+}
+</script>
+
+</body>
+</html>
