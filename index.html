@@ -1,25 +1,40 @@
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
-<meta charset="UTF-8">
-<title>لوحة واتساب</title>
-<style>
-body{font-family:Arial;background:#111;color:#fff;padding:20px}
-input,button{padding:10px;margin:5px;border-radius:8px;border:none}
-button{background:#25d366;color:#fff;cursor:pointer}
-</style>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>لوحة واتساب</title>
+  <style>
+    body{font-family:Arial,sans-serif;background:#111827;color:#fff;padding:20px;max-width:700px;margin:auto}
+    input,button{padding:12px;margin:6px 0;border-radius:10px;border:none;width:100%;box-sizing:border-box}
+    input{background:#fff;color:#111}
+    button{background:#25d366;color:#fff;cursor:pointer;font-weight:bold}
+    .box{background:#1f2937;padding:14px;border-radius:12px;margin-top:14px}
+    pre{white-space:pre-wrap;word-break:break-word}
+    .muted{color:#cbd5e1;font-size:14px}
+  </style>
 </head>
 <body>
 
-<h2>⚙️ إعدادات واتساب</h2>
-<input id="token" placeholder="Access Token">
-<input id="inst" placeholder="Instance ID">
-<button onclick="save()">💾 حفظ</button>
+  <div class="box">
+    <h2>⚙️ إعدادات واتساب</h2>
+    <div class="muted">اكتب Access Token و Instance ID مرة واحدة فقط، وسيتم حفظهم في المتصفح.</div>
+    <input id="token" placeholder="Access Token">
+    <input id="inst" placeholder="Instance ID">
+    <button onclick="saveSettings()">💾 حفظ الإعدادات</button>
+  </div>
 
-<h2>📩 إرسال رسالة</h2>
-<input id="name" placeholder="اسم العميل">
-<input id="phone" placeholder="رقم العميل">
-<button onclick="send()">🚀 إرسال</button>
+  <div class="box">
+    <h2>📩 إرسال رسالة تأكيد</h2>
+    <input id="name" placeholder="اسم العميل">
+    <input id="phone" placeholder="رقم العميل">
+    <button onclick="sendMessage()">🚀 إرسال</button>
+  </div>
+
+  <div class="box">
+    <h3>النتيجة</h3>
+    <pre id="result">لا يوجد</pre>
+  </div>
 
 <script>
 let waToken = localStorage.getItem("waToken") || "";
@@ -28,39 +43,67 @@ let waInst = localStorage.getItem("waInst") || "";
 document.getElementById("token").value = waToken;
 document.getElementById("inst").value = waInst;
 
-function save(){
-  waToken = document.getElementById("token").value;
-  waInst = document.getElementById("inst").value;
-
+function saveSettings() {
+  waToken = document.getElementById("token").value.trim();
+  waInst = document.getElementById("inst").value.trim();
   localStorage.setItem("waToken", waToken);
   localStorage.setItem("waInst", waInst);
-
   alert("تم الحفظ");
 }
 
-function formatPhone(p){
-  let c = p.replace(/\D/g,"");
-  if(!c.startsWith("966")){
-    c = "966" + c.replace(/^0/,"");
+function formatPhone(p) {
+  let c = String(p || "").replace(/\D/g, "");
+  if (!c.startsWith("966")) {
+    c = "966" + c.replace(/^0/, "");
   }
   return c;
 }
 
-function send(){
-  const name = document.getElementById("name").value;
-  const phone = document.getElementById("phone").value;
+async function sendMessage() {
+  const name = document.getElementById("name").value.trim();
+  const phone = document.getElementById("phone").value.trim();
 
-  if(!name || !phone){
-    alert("اكتب البيانات");
+  if (!waToken || !waInst) {
+    alert("اكتب Access Token و Instance ID");
     return;
   }
 
-  let p = formatPhone(phone);
-  const msg = encodeURIComponent("✅ تم تأكيد حجزك يا " + name);
+  if (!name || !phone) {
+    alert("اكتب اسم العميل ورقمه");
+    return;
+  }
 
-  const url = `https://whatsbot.at/api/send_pedido?access_token=${waToken}&instance_id=${waInst}&number=${p}&message=${msg}`;
+  const payload = {
+    number: formatPhone(phone),
+    message: `✅ تم تأكيد حجزك يا ${name}`,
+    instance_id: waInst,
+    access_token: waToken
+  };
 
-  window.open(url, "_blank");
+  document.getElementById("result").textContent = "جاري الإرسال...";
+
+  try {
+    const res = await fetch("/api/send-whatsapp", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(payload)
+    });
+
+    const text = await res.text();
+    document.getElementById("result").textContent = text;
+
+    if (!res.ok) {
+      alert("فشل الإرسال");
+      return;
+    }
+
+    alert("✅ تم إرسال الرسالة");
+  } catch (e) {
+    document.getElementById("result").textContent = e.message;
+    alert("❌ خطأ: " + e.message);
+  }
 }
 </script>
 
