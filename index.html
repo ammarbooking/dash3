@@ -89,8 +89,8 @@ function App() {
   // Config
   const [supaUrl,setSupaUrl] = useState(localStorage.getItem("supaUrl") || "");
   const [supaKey,setSupaKey] = useState(localStorage.getItem("supaKey") || "");
-  const [waToken] = useState("669c3f9310ef5");
-  const [waInst,setWaInst] = useState(localStorage.getItem("waInst") || "669D7FC419A08");
+  const [waToken,setWaToken] = useState(localStorage.getItem("waToken") || "");
+  const [waInst,setWaInst] = useState(localStorage.getItem("waInst") || "");
   const [autoConf,setAutoConf] = useState(true);
   const [autoCanc,setAutoCanc] = useState(true);
   const [autoRem,setAutoRem] = useState(true);
@@ -135,11 +135,10 @@ function App() {
     if (waOk) {
       const available = getAvailablePoints(customer) - reward.points;
       try {
-        await fetch("https://whatsbot.at/api/send_pedido", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
-          number: fmtPh(customer.phone), type: "text",
+        await sendWhatsBotRequest({
+          number: fmtPh(customer.phone),
           message: `🎁 مكافأة ولاء - إبداع عمار\n\nمرحباً ${customer.name}،\nتم استبدال نقاطك بنجاح!\n\n🏆 المكافأة: ${reward.name}\n⭐ النقاط المستخدمة: ${reward.points}\n📊 رصيدك المتبقي: ${available} نقطة\n\nأبرز الكوبون عند زيارتك القادمة.\nشكراً لولائك! 💈`,
-          instance_id: waInst, access_token: waToken
-        })});
+        });
         setToast({msg:`تم استبدال ${reward.points} نقطة وإشعار ${customer.name} ✓`,type:"success"});
       } catch { setToast({msg:"تم الاستبدال (فشل إرسال الإشعار)",type:"info"}); }
     } else {
@@ -154,9 +153,103 @@ function App() {
   const db = dbOk ? supa(supaUrl, supaKey) : null;
   const today = new Date().toISOString().split("T")[0];
   const perPage = 10;
+  const whatsbotEndpoint = "https://whatsbot.at/api/send_pedido";
+
+  const parseWhatsBotResponse = async (res) => {
+    const raw = await res.text();
+    let data = null;
+    try { data = JSON.parse(raw); } catch { data = { raw }; }
+    return { ok: res.ok, status: res.status, raw, data };
+  };
+
+  const isWhatsBotSuccess = (result) => {
+    if (!result.ok) return false;
+    const d = result.data || {};
+    const statusText = String(d?.status || "").toLowerCase();
+    const msgText = String(d?.message || d?.error || d?.raw || "").toLowerCase();
+    if (d?.error) return false;
+    if (d?.success === false || d?.status === false) return false;
+    if (["error","failed","fail","invalid"].includes(statusText)) return false;
+    if (msgText.includes("missing required parameters") || msgText.includes("invalid") || msgText.includes("unauthorized") || msgText.includes("expired")) return false;
+    return true;
+  };
+
+  const sendWhatsBotRequest = async ({ number, message }) => {
+    const token = waToken?.trim();
+    const inst = waInst?.trim();
+    if (!token || !inst) throw new Error("أدخل Access Token و Instance ID أولاً");
+
+    const payload = {
+      number: String(number || "").trim(),
+      type: "text",
+      message: String(message || "").trim(),
+      instance_id: inst,
+      access_token: token,
+    };
+
+    const attempts = [];
+
+    // 1) POST JSON
+    attempts.push(async () => {
+      const res = await fetch(whatsbotEndpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      return parseWhatsBotResponse(res);
+    });
+
+    // 2) POST FormData
+    attempts.push(async () => {
+      const form = new FormData();
+      Object.entries(payload).forEach(([k,v]) => form.append(k, v));
+      const res = await fetch(whatsbotEndpoint, { method: "POST", body: form });
+      return parseWhatsBotResponse(res);
+    });
+
+    // 3) PUT JSON
+    attempts.push(async () => {
+      const res = await fetch(whatsbotEndpoint, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      return parseWhatsBotResponse(res);
+    });
+
+    // 4) PUT URLSearchParams
+    attempts.push(async () => {
+      const params = new URLSearchParams();
+      Object.entries(payload).forEach(([k,v]) => params.append(k, v));
+      const res = await fetch(whatsbotEndpoint, {
+        method: "PUT",
+        headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+        body: params.toString(),
+      });
+      return parseWhatsBotResponse(res);
+    });
+
+    let lastResult = null;
+    for (const attempt of attempts) {
+      try {
+        const result = await attempt();
+        console.log("WhatsBot attempt result:", result);
+        lastResult = result;
+        if (isWhatsBotSuccess(result)) return result;
+      } catch (err) {
+        console.error("WhatsBot attempt failed:", err);
+        lastResult = { ok: false, status: 0, raw: String(err?.message || err), data: { error: String(err?.message || err) } };
+      }
+    }
+
+    const msg = lastResult?.data?.message || lastResult?.data?.error || lastResult?.raw || "فشل إرسال الواتساب";
+    throw new Error(lastResult?.status ? `HTTP ${lastResult.status} - ${msg}` : msg);
+  };
+
 
   useEffect(() => { localStorage.setItem("supaUrl", supaUrl); }, [supaUrl]);
   useEffect(() => { localStorage.setItem("supaKey", supaKey); }, [supaKey]);
+  useEffect(() => { localStorage.setItem("waToken", waToken); }, [waToken]);
   useEffect(() => { localStorage.setItem("waInst", waInst); }, [waInst]);
   useEffect(() => { localStorage.setItem("redemptions", JSON.stringify(redemptions)); }, [redemptions]);
 
@@ -285,20 +378,12 @@ function App() {
 
   // ═══ WhatsBot.at Send ═══
   const sendWA = async(bk,type,reason)=>{
-    if(!waToken?.trim() || !waInst?.trim()){setToast({msg:"أدخل Token و Instance ID أولاً",type:"error"});return false;}
+    if(!waToken?.trim() || !waInst?.trim()){setToast({msg:"أدخل Access Token و Instance ID أولاً",type:"error"});return false;}
     setSending(true);
     try{
       const message = type==="cancellation" ? MSG[type](bk,reason) : MSG[type](bk);
-      const payload = {number:fmtPh(bk.customer_phone),type:"text",message,instance_id:waInst.trim(),access_token:waToken.trim()};
-      const res=await fetch("https://whatsbot.at/api/send_pedido",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
-      const raw = await res.text();
-      let data = null;
-      try{ data = JSON.parse(raw); }catch{ data = { raw }; }
-      console.log("WhatsBot send response:", data);
-      if(!res.ok) throw new Error(`HTTP ${res.status} - ${typeof raw === "string" ? raw : JSON.stringify(data)}`);
-      const msgText = String(data?.message || data?.error || data?.raw || "").toLowerCase();
-      const failed = data?.success === false || data?.status === false || !!data?.error || msgText.includes("invalid") || msgText.includes("not found") || msgText.includes("unauthorized") || msgText.includes("expired");
-      if(failed) throw new Error(data?.message || data?.error || "فشل إرسال الرسالة");
+      const result = await sendWhatsBotRequest({ number: fmtPh(bk.customer_phone), message });
+      console.log("WhatsBot send response:", result);
       setWaVerified(true);
       setToast({msg:`تم إرسال ${type==="confirmation"?"تأكيد":type==="reminder"?"تذكير":"إلغاء"} لـ ${bk.customer_name} ✓`,type:"success"});
       if(db) await db.update("bookings",bk.id,{notified:true});
@@ -309,8 +394,7 @@ function App() {
       setWaVerified(false);
       setToast({msg:`خطأ واتساب: ${e.message}`,type:"error"});
       return false;
-    }
-    finally{setSending(false);}
+    }finally{setSending(false);}
   };
 
   // ═══ Update Status ═══
@@ -358,7 +442,7 @@ function App() {
     setBulkProg({s:0,t:tg.length,on:true});
     let s=0;
     for(const c of tg){
-      try{await fetch("https://whatsbot.at/api/send_pedido",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({number:fmtPh(c.phone),type:"text",message:`💈 إبداع عمار\n\nمرحباً ${c.name}،\n${bulkMsg}`,instance_id:waInst,access_token:waToken})});s++;}catch{}
+      try{await sendWhatsBotRequest({number:fmtPh(c.phone),message:`💈 إبداع عمار\n\nمرحباً ${c.name}،\n${bulkMsg}`});s++;}catch(e){console.error("Bulk WhatsBot send failed:",e);}
       setBulkProg({s,t:tg.length,on:true});
       await new Promise(r=>setTimeout(r,1500));
     }
@@ -660,9 +744,10 @@ function App() {
             <span style={{color:"#555578",transform:showWa?"rotate(90deg)":"none",transition:"0.2s"}}>←</span>
           </div>
           {showWa&&(<div style={{marginTop:14,paddingTop:14,borderTop:"1px solid #1a1a30"}}>
-            <div style={{...inp,background:"#0d0d1a",color:"#34d399",fontSize:12,marginBottom:10,direction:"ltr",textAlign:"left"}}>Token: {waToken}</div>
+            <div style={{marginBottom:10}}><label style={{fontSize:11,color:"#8b8ba3",marginBottom:4,display:"block"}}>Access Token *</label><input placeholder="أدخل Access Token" value={waToken} onChange={e=>setWaToken(e.target.value)} style={{...inp,direction:"ltr",textAlign:"left"}}/></div>
             <div style={{marginBottom:10}}><label style={{fontSize:11,color:"#8b8ba3",marginBottom:4,display:"block"}}>Instance ID *</label><input placeholder="609ACF283XXXX" value={waInst} onChange={e=>setWaInst(e.target.value.trim())} style={{...inp,direction:"ltr",textAlign:"left"}}/></div>
-            <button className="bt" disabled={!waInst || sending} onClick={async()=>{setSending(true);try{const res=await fetch("https://whatsbot.at/api/send_pedido",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({number:"966566626652",type:"text",message:"✅ لوحة إبداع عمار متصلة!",instance_id:waInst.trim(),access_token:waToken.trim()})});const raw=await res.text();let data=null;try{data=JSON.parse(raw);}catch{data={raw};}console.log("WhatsBot test response:",data);if(!res.ok) throw new Error(`HTTP ${res.status} - ${typeof raw === "string" ? raw : JSON.stringify(data)}`);const msgText=String(data?.message||data?.error||data?.raw||"").toLowerCase();const failed=data?.success===false||data?.status===false||!!data?.error||msgText.includes("invalid")||msgText.includes("not found")||msgText.includes("unauthorized")||msgText.includes("expired");if(failed) throw new Error(data?.message||data?.error||"فشل إرسال رسالة التجربة");setWaVerified(true);setToast({msg:"✅ تم إرسال رسالة التجربة بنجاح",type:"success"});}catch(e){console.error("WhatsBot test failed:",e);setWaVerified(false);setToast({msg:`فشل الواتساب: ${e.message}`,type:"error"});}finally{setSending(false);}}} style={{width:"100%",padding:11,borderRadius:10,border:"none",background:"#25d366",color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif",opacity:waInst?1:0.5}}>🧪 تجربة</button>
+            <div style={{fontSize:11,color:"#8b8ba3",background:"#1a1a30",padding:"8px 10px",borderRadius:8,marginBottom:10}}>أدخل التوكن والـ Instance ID من لوحة WhatsBot. التطبيق سيحاول أكثر من صيغة إرسال تلقائيًا لأن بعض نسخ API تقبل POST أو PUT وبصيَغ مختلفة.</div>
+            <button className="bt" disabled={!waInst || !waToken || sending} onClick={async()=>{setSending(true);try{const result=await sendWhatsBotRequest({number:"966566626652",message:"✅ لوحة إبداع عمار متصلة!"});console.log("WhatsBot test response:",result);setWaVerified(true);setToast({msg:"✅ تم إرسال رسالة التجربة بنجاح",type:"success"});}catch(e){console.error("WhatsBot test failed:",e);setWaVerified(false);setToast({msg:`فشل الواتساب: ${e.message}`,type:"error"});}finally{setSending(false);}}} style={{width:"100%",padding:11,borderRadius:10,border:"none",background:"#25d366",color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif",opacity:(waInst&&waToken)?1:0.5}}>🧪 تجربة</button>
           </div>)}
         </div>
 
