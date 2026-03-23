@@ -149,7 +149,8 @@ function App() {
   };
 
   const dbOk = Boolean(supaUrl && supaKey);
-  const waOk = Boolean(waToken && waInst);
+  const waOk = Boolean(waToken?.trim() && waInst?.trim());
+  const [waVerified,setWaVerified] = useState(false);
   const db = dbOk ? supa(supaUrl, supaKey) : null;
   const today = new Date().toISOString().split("T")[0];
   const perPage = 10;
@@ -217,17 +218,24 @@ function App() {
         // Send reminder if within 1 minute window of the reminder time
         if (diff <= 0 && diff > -60000) {
           try {
-            await fetch("https://whatsbot.at/api/send_pedido", {
+            const res = await fetch("https://whatsbot.at/api/send_pedido", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
                 number: fmtPh(bk.customer_phone),
                 type: "text",
                 message: MSG.reminder(bk),
-                instance_id: waInst,
-                access_token: waToken,
+                instance_id: waInst.trim(),
+                access_token: waToken.trim(),
               }),
             });
+            const raw = await res.text();
+            let data = null;
+            try { data = JSON.parse(raw); } catch { data = { raw }; }
+            const msgText = String(data?.message || data?.error || data?.raw || "").toLowerCase();
+            const failed = !res.ok || data?.success === false || data?.status === false || !!data?.error || msgText.includes("invalid") || msgText.includes("not found") || msgText.includes("unauthorized") || msgText.includes("expired");
+            if (failed) throw new Error(data?.message || data?.error || `HTTP ${res.status}`);
+            setWaVerified(true);
             setReminded(prev => new Set([...prev, bk.id]));
             setBookings(prev => prev.map(b => b.id === bk.id ? { ...b, reminded: true } : b));
             setToast({ msg: `⏰ تذكير تلقائي: تم إشعار ${bk.customer_name} (${bk.booking_time})`, type: "success" });
@@ -277,18 +285,31 @@ function App() {
 
   // ═══ WhatsBot.at Send ═══
   const sendWA = async(bk,type,reason)=>{
-    if(!waOk){setToast({msg:"أدخل Instance ID أولاً",type:"error"});return false;}
+    if(!waToken?.trim() || !waInst?.trim()){setToast({msg:"أدخل Token و Instance ID أولاً",type:"error"});return false;}
     setSending(true);
     try{
       const message = type==="cancellation" ? MSG[type](bk,reason) : MSG[type](bk);
-      const res=await fetch("https://whatsbot.at/api/send_pedido",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({number:fmtPh(bk.customer_phone),type:"text",message,instance_id:waInst,access_token:waToken})});
-      if(res.ok){
-        setToast({msg:`تم إرسال ${type==="confirmation"?"تأكيد":type==="reminder"?"تذكير":"إلغاء"} لـ ${bk.customer_name} ✓`,type:"success"});
-        if(db) await db.update("bookings",bk.id,{notified:true});
-        setBookings(p=>p.map(b=>b.id===bk.id?{...b,notified:true}:b));
-        return true;
-      }else{setToast({msg:`فشل: ${res.status}`,type:"error"});return false;}
-    }catch(e){setToast({msg:`خطأ: ${e.message}`,type:"error"});return false;}
+      const payload = {number:fmtPh(bk.customer_phone),type:"text",message,instance_id:waInst.trim(),access_token:waToken.trim()};
+      const res=await fetch("https://whatsbot.at/api/send_pedido",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+      const raw = await res.text();
+      let data = null;
+      try{ data = JSON.parse(raw); }catch{ data = { raw }; }
+      console.log("WhatsBot send response:", data);
+      if(!res.ok) throw new Error(`HTTP ${res.status} - ${typeof raw === "string" ? raw : JSON.stringify(data)}`);
+      const msgText = String(data?.message || data?.error || data?.raw || "").toLowerCase();
+      const failed = data?.success === false || data?.status === false || !!data?.error || msgText.includes("invalid") || msgText.includes("not found") || msgText.includes("unauthorized") || msgText.includes("expired");
+      if(failed) throw new Error(data?.message || data?.error || "فشل إرسال الرسالة");
+      setWaVerified(true);
+      setToast({msg:`تم إرسال ${type==="confirmation"?"تأكيد":type==="reminder"?"تذكير":"إلغاء"} لـ ${bk.customer_name} ✓`,type:"success"});
+      if(db) await db.update("bookings",bk.id,{notified:true});
+      setBookings(p=>p.map(b=>b.id===bk.id?{...b,notified:true}:b));
+      return true;
+    }catch(e){
+      console.error("WhatsBot send failed:", e);
+      setWaVerified(false);
+      setToast({msg:`خطأ واتساب: ${e.message}`,type:"error"});
+      return false;
+    }
     finally{setSending(false);}
   };
 
@@ -362,7 +383,7 @@ function App() {
           </div>
           <div style={{display:"flex",alignItems:"center",gap:6}}>
             {dbOk&&<span style={{fontSize:9,background:"#4285f422",color:"#60a5fa",padding:"3px 8px",borderRadius:10}}>DB ✓</span>}
-            {waOk&&<span style={{fontSize:9,background:"#25d36622",color:"#34d399",padding:"3px 8px",borderRadius:10}}>WA ✓</span>}
+            {waOk&&<span style={{fontSize:9,background:waVerified?"#25d36622":"#8882",color:waVerified?"#34d399":"#cbd5e1",padding:"3px 8px",borderRadius:10}}>{waVerified?"WA ✓":"WA Config"}</span>}
             <div style={{width:36,height:36,borderRadius:10,background:"linear-gradient(135deg,#c0a062,#8b6914)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,fontWeight:900,color:"#fff"}}>ع</div>
           </div>
         </div>
@@ -635,13 +656,13 @@ function App() {
         {/* WhatsBot */}
         <div style={{background:"#131328",borderRadius:14,padding:16,marginBottom:10}}>
           <div onClick={()=>setShowWa(!showWa)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer"}}>
-            <div style={{display:"flex",alignItems:"center",gap:10}}><div style={{width:38,height:38,borderRadius:10,background:"#25d36622",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18}}>💬</div><div><div style={{fontSize:13,fontWeight:700,color:"#fff"}}>WhatsBot.at</div><div style={{fontSize:11,color:waOk?"#34d399":"#666680"}}>{waOk?"✅ متصل":"أدخل Instance ID"}</div></div></div>
+            <div style={{display:"flex",alignItems:"center",gap:10}}><div style={{width:38,height:38,borderRadius:10,background:"#25d36622",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18}}>💬</div><div><div style={{fontSize:13,fontWeight:700,color:"#fff"}}>WhatsBot.at</div><div style={{fontSize:11,color:waOk?"#34d399":"#666680"}}>{waVerified?"✅ متصل فعليًا":waOk?"⚠️ تم إدخال البيانات فقط":"أدخل Instance ID"}</div></div></div>
             <span style={{color:"#555578",transform:showWa?"rotate(90deg)":"none",transition:"0.2s"}}>←</span>
           </div>
           {showWa&&(<div style={{marginTop:14,paddingTop:14,borderTop:"1px solid #1a1a30"}}>
             <div style={{...inp,background:"#0d0d1a",color:"#34d399",fontSize:12,marginBottom:10,direction:"ltr",textAlign:"left"}}>Token: {waToken}</div>
             <div style={{marginBottom:10}}><label style={{fontSize:11,color:"#8b8ba3",marginBottom:4,display:"block"}}>Instance ID *</label><input placeholder="609ACF283XXXX" value={waInst} onChange={e=>setWaInst(e.target.value.trim())} style={{...inp,direction:"ltr",textAlign:"left"}}/></div>
-            <button className="bt" disabled={!waInst} onClick={async()=>{setSending(true);try{await fetch("https://whatsbot.at/api/send_pedido",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({number:"966566626652",type:"text",message:"✅ لوحة إبداع عمار متصلة!",instance_id:waInst,access_token:waToken})});setToast({msg:"تحقق الواتساب ✓",type:"success"});}catch(e){setToast({msg:e.message,type:"error"});}finally{setSending(false);}}} style={{width:"100%",padding:11,borderRadius:10,border:"none",background:"#25d366",color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif",opacity:waInst?1:0.5}}>🧪 تجربة</button>
+            <button className="bt" disabled={!waInst || sending} onClick={async()=>{setSending(true);try{const res=await fetch("https://whatsbot.at/api/send_pedido",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({number:"966566626652",type:"text",message:"✅ لوحة إبداع عمار متصلة!",instance_id:waInst.trim(),access_token:waToken.trim()})});const raw=await res.text();let data=null;try{data=JSON.parse(raw);}catch{data={raw};}console.log("WhatsBot test response:",data);if(!res.ok) throw new Error(`HTTP ${res.status} - ${typeof raw === "string" ? raw : JSON.stringify(data)}`);const msgText=String(data?.message||data?.error||data?.raw||"").toLowerCase();const failed=data?.success===false||data?.status===false||!!data?.error||msgText.includes("invalid")||msgText.includes("not found")||msgText.includes("unauthorized")||msgText.includes("expired");if(failed) throw new Error(data?.message||data?.error||"فشل إرسال رسالة التجربة");setWaVerified(true);setToast({msg:"✅ تم إرسال رسالة التجربة بنجاح",type:"success"});}catch(e){console.error("WhatsBot test failed:",e);setWaVerified(false);setToast({msg:`فشل الواتساب: ${e.message}`,type:"error"});}finally{setSending(false);}}} style={{width:"100%",padding:11,borderRadius:10,border:"none",background:"#25d366",color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif",opacity:waInst?1:0.5}}>🧪 تجربة</button>
           </div>)}
         </div>
 
