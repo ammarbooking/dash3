@@ -7,7 +7,6 @@
 body{font-family:Arial;background:#0f172a;color:#fff;padding:20px}
 input,button{padding:10px;margin:5px;border-radius:8px;border:none}
 button{background:#25d366;color:#fff;cursor:pointer}
-.card{background:#1e293b;padding:10px;border-radius:10px;margin-top:10px}
 </style>
 </head>
 <body>
@@ -21,8 +20,6 @@ button{background:#25d366;color:#fff;cursor:pointer}
 <input id="name" placeholder="اسم العميل">
 <input id="phone" placeholder="رقم العميل">
 <button onclick="confirmBooking()">✅ تأكيد وإرسال واتساب</button>
-
-<div id="log"></div>
 
 <script>
 let waToken = localStorage.getItem("waToken") || "";
@@ -49,38 +46,11 @@ function formatPhone(p){
   return c;
 }
 
-async function sendWA(name, phone){
-  try{
-    const payload = {
-      number: formatPhone(phone),
-      message: `✅ تم تأكيد حجزك يا ${name}`,
-      instance_id: waInst,
-      access_token: waToken
-    };
-
-    const res = await fetch("https://whatsbot.at/whatsapp_livechat/send_message",{
-      method:"POST",
-      headers:{
-        "Content-Type":"application/json"
-      },
-      body: JSON.stringify(payload)
-    });
-
-    const text = await res.text();
-
-    document.getElementById("log").innerHTML += 
-      "<div class='card'>"+text+"</div>";
-
-    if(!res.ok){
-      alert("❌ فشل الإرسال");
-      return;
-    }
-
-    alert("✅ تم إرسال الرسالة");
-
-  }catch(e){
-    alert("❌ خطأ: "+e.message);
-  }
+function sendWA(name, phone){
+  let p = formatPhone(phone);
+  const msg = encodeURIComponent("✅ تم تأكيد حجزك يا " + name);
+  const url = `https://whatsbot.at/api/send_pedido?access_token=${waToken}&instance_id=${waInst}&number=${p}&message=${msg}`;
+  window.open(url, "_blank");
 }
 
 function confirmBooking(){
