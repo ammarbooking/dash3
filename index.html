@@ -262,7 +262,10 @@ function App() {
     setLoading(true);
     try{
       const data = await db.get("bookings","&order=booking_date.desc,booking_time.desc");
-      setBookings(Array.isArray(data) ? data : []);
+      setBookings(prev => {
+        const next = Array.isArray(data) ? data : [];
+        return JSON.stringify(prev) === JSON.stringify(next) ? prev : next;
+      });
     }catch(e){
       setToast({msg:`خطأ تحميل: ${e.message}`,type:"error"});
       setBookings([]);
@@ -273,10 +276,7 @@ function App() {
   useEffect(()=>{
     if(dbOk) loadBookings();
     else setBookings([]);
-  },[dbOk,loadBookings]);
-
-  // Auto-refresh every 30s
-  useEffect(()=>{if(!dbOk)return;const i=setInterval(loadBookings,30000);return()=>clearInterval(i);},[dbOk,loadBookings]);
+  },[dbOk]);
 
   // ═══ Auto-Reminder System (30 min before) ═══
   useEffect(() => {
