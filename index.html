@@ -96,10 +96,8 @@ function App() {
   const [loading,setLoading] = useState(false);
 
   // Config
-  const DEFAULT_SUPA_URL = "https://vmbaxqghabxzvkcxwjdy.supabase.co";
-  const DEFAULT_SUPA_KEY = "sb_publishable_5maKs94zmK6Iu5TbpiHkWw_SM0Ew2Y2";
-  const [supaUrl,setSupaUrl] = useState(() => localStorage.getItem("supaUrl") || DEFAULT_SUPA_URL);
-  const [supaKey,setSupaKey] = useState(() => localStorage.getItem("supaKey") || DEFAULT_SUPA_KEY);
+  const [supaUrl,setSupaUrl] = useState(() => localStorage.getItem("supaUrl") || "https://vmbaxqghabxzvkcxwjdy.supabase.co");
+  const [supaKey,setSupaKey] = useState(() => localStorage.getItem("supaKey") || "sb_publishable_5maKs94zmK6Iu5TbpiHkWw_SM0Ew2Y2");
   const [waToken,setWaToken] = useState(() => localStorage.getItem("waToken") || "");
   const [waInst,setWaInst] = useState(() => localStorage.getItem("waInst") || "");
   const [autoConf,setAutoConf] = useState(true);
@@ -276,12 +274,34 @@ function App() {
   const mxW=Math.max(...wk.map(d=>d.c),1);
 
   const fmtPh = (p) => {
-    let c = String(p || "").replace(/\D/g, "").trim();
+    if (!p) return "";
+
+    const ar = "٠١٢٣٤٥٦٧٨٩";
+    const en = "0123456789";
+
+    let c = String(p)
+      .split("")
+      .map(ch => {
+        const i = ar.indexOf(ch);
+        return i !== -1 ? en[i] : ch;
+      })
+      .join("")
+      .replace(/\D/g, "")
+      .trim();
+
     if (!c) return "";
     if (c.startsWith("00")) c = c.slice(2);
-    if (c.startsWith("966")) return c;
+
+    // Saudi numbers
+    if (c.startsWith("9665") && c.length === 12) return c;
     if (c.startsWith("05") && c.length === 10) return "966" + c.slice(1);
     if (c.startsWith("5") && c.length === 9) return "966" + c;
+
+    // Egypt numbers
+    if (c.startsWith("201") && c.length === 12) return c;
+    if (c.startsWith("01") && c.length === 11) return "2" + c;
+    if (c.startsWith("1") && c.length === 10) return "20" + c;
+
     return "";
   };
 
@@ -304,46 +324,26 @@ function App() {
     return { hour, minute };
   };
 
-
-  const normalizePhone = (input) => {
-    if (!input) return "";
-    const arabicNums = "٠١٢٣٤٥٦٧٨٩";
-    const englishNums = "0123456789";
-
-    let phone = String(input)
-      .split("")
-      .map((ch) => {
-        const idx = arabicNums.indexOf(ch);
-        return idx !== -1 ? englishNums[idx] : ch;
-      })
-      .join("");
-
-    phone = phone.replace(/\D/g, "");
-
-    if (phone.startsWith("00")) phone = phone.slice(2);
-    if (phone.startsWith("20")) return phone;
-    if (phone.startsWith("0")) return `2${phone}`;
-    if (phone.startsWith("1")) return `20${phone}`;
-
-    return phone;
-  };
-
   const postWhatsBot = async ({ number, message }) => {
     const baseUrl = String(supaUrl || "").trim().replace(/\/$/, "");
-    const anonKey = String(supaKey || "").trim();
+    const publishableKey = String(supaKey || "").trim();
+    const cleanPhone = fmtPh(number);
 
-    if (!baseUrl || !anonKey) {
+    if (!baseUrl || !publishableKey) {
       throw new Error("بيانات Supabase غير مكتملة");
+    }
+    if (!cleanPhone) {
+      throw new Error("رقم العميل غير صحيح أو فارغ");
     }
 
     const res = await fetch(`${baseUrl}/functions/v1/send-wa`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        apikey: anonKey
+        apikey: publishableKey
       },
       body: JSON.stringify({
-        phone: normalizePhone(number),
+        phone: cleanPhone,
         message: String(message || "").trim()
       })
     });
@@ -797,7 +797,7 @@ function App() {
           </div>
           {showDb&&(<div style={{marginTop:14,paddingTop:14,borderTop:"1px solid #1a1a30"}}>
             <div style={{marginBottom:10}}><label style={{fontSize:11,color:"#8b8ba3",marginBottom:4,display:"block"}}>Project URL</label><input placeholder="https://xxxxx.supabase.co" value={supaUrl} onChange={e=>setSupaUrl(e.target.value.trim())} style={{...inp,direction:"ltr",textAlign:"left"}}/></div>
-            <div style={{marginBottom:10}}><label style={{fontSize:11,color:"#8b8ba3",marginBottom:4,display:"block"}}>Publishable Key</label><input placeholder="sb_publishable_..." value={supaKey} onChange={e=>setSupaKey(e.target.value.trim())} style={{...inp,direction:"ltr",textAlign:"left",fontSize:12}}/></div>
+            <div style={{marginBottom:10}}><label style={{fontSize:11,color:"#8b8ba3",marginBottom:4,display:"block"}}>Publishable Key</label><input placeholder="eyJ..." value={supaKey} onChange={e=>setSupaKey(e.target.value.trim())} style={{...inp,direction:"ltr",textAlign:"left",fontSize:12}}/></div>
             <button className="bt" onClick={async()=>{if(!supaUrl||!supaKey)return;setLoading(true);try{const d=await supa(supaUrl,supaKey).get("bookings","&limit=1");setToast({msg:d?"✅ متصل بنجاح!":"فشل",type:d?"success":"error"});}catch(e){setToast({msg:`خطأ: ${e.message}`,type:"error"});}finally{setLoading(false);}}} style={{width:"100%",padding:11,borderRadius:10,border:"none",background:"linear-gradient(135deg,#4285f4,#2563eb)",color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif"}}>🧪 تجربة الاتصال</button>
           </div>)}
         </div>
