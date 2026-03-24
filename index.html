@@ -96,8 +96,10 @@ function App() {
   const [loading,setLoading] = useState(false);
 
   // Config
-  const [supaUrl,setSupaUrl] = useState(() => localStorage.getItem("supaUrl") || "https://vmbaxqghabxzvkcxwjdy.supabase.co");
-  const [supaKey,setSupaKey] = useState(() => localStorage.getItem("supaKey") || "sb_publishable_5maKs94zmK6Iu5TbpiHkWw_SM0Ew2Y2");
+  const DEFAULT_SUPA_URL = "https://vmbaxqghabxzvkcxwjdy.supabase.co";
+  const DEFAULT_SUPA_KEY = "sb_publishable_5maKs94zmK6Iu5TbpiHkWw_SM0Ew2Y2";
+  const [supaUrl,setSupaUrl] = useState(() => localStorage.getItem("supaUrl") || DEFAULT_SUPA_URL);
+  const [supaKey,setSupaKey] = useState(() => localStorage.getItem("supaKey") || DEFAULT_SUPA_KEY);
   const [waToken,setWaToken] = useState(() => localStorage.getItem("waToken") || "");
   const [waInst,setWaInst] = useState(() => localStorage.getItem("waInst") || "");
   const [autoConf,setAutoConf] = useState(true);
@@ -151,7 +153,9 @@ function App() {
       try {
         await postWhatsBot({
           number: fmtPh(customer.phone),
-          message: `🎁 مكافأة ولاء - إبداع عمار\n\nمرحباً ${customer.name}،\nتم استبدال نقاطك بنجاح!\n\n🏆 المكافأة: ${reward.name}\n⭐ النقاط المستخدمة: ${reward.points}\n📊 رصيدك المتبقي: ${available} نقطة\n\nأبرز الكوبون عند زيارتك القادمة.\nشكراً لولائك! 💈`
+          message: `🎁 مكافأة ولاء - إبداع عمار\n\nمرحباً ${customer.name}،\nتم استبدال نقاطك بنجاح!\n\n🏆 المكافأة: ${reward.name}\n⭐ النقاط المستخدمة: ${reward.points}\n📊 رصيدك المتبقي: ${available} نقطة\n\nأبرز الكوبون عند زيارتك القادمة.\nشكراً لولائك! 💈`,
+          token: waToken,
+          inst: waInst
         });
         setToast({msg:`تم استبدال ${reward.points} نقطة وإشعار ${customer.name} ✓`,type:"success"});
       } catch { setToast({msg:"تم الاستبدال (فشل إرسال الإشعار)",type:"info"}); }
@@ -300,6 +304,30 @@ function App() {
     return { hour, minute };
   };
 
+
+  const normalizePhone = (input) => {
+    if (!input) return "";
+    const arabicNums = "٠١٢٣٤٥٦٧٨٩";
+    const englishNums = "0123456789";
+
+    let phone = String(input)
+      .split("")
+      .map((ch) => {
+        const idx = arabicNums.indexOf(ch);
+        return idx !== -1 ? englishNums[idx] : ch;
+      })
+      .join("");
+
+    phone = phone.replace(/\D/g, "");
+
+    if (phone.startsWith("00")) phone = phone.slice(2);
+    if (phone.startsWith("20")) return phone;
+    if (phone.startsWith("0")) return `2${phone}`;
+    if (phone.startsWith("1")) return `20${phone}`;
+
+    return phone;
+  };
+
   const postWhatsBot = async ({ number, message }) => {
     const baseUrl = String(supaUrl || "").trim().replace(/\/$/, "");
     const anonKey = String(supaKey || "").trim();
@@ -315,7 +343,7 @@ function App() {
         apikey: anonKey
       },
       body: JSON.stringify({
-        phone: String(number || "").trim(),
+        phone: normalizePhone(number),
         message: String(message || "").trim()
       })
     });
